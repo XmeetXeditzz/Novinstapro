@@ -5,6 +5,7 @@ from instagrapi import Client
 from instagrapi.exceptions import ClientError, LoginRequired
 import hashlib
 import sys
+from werkzeug.utils import secure_filename  
 
 try:
     from PIL import Image
@@ -14,6 +15,15 @@ except ImportError:
     print("Warning: PIL/Pillow not available - image features disabled")
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+
+# ✅✅✅ SESSION UPLOAD CONFIGURATION ADD KAREN ✅✅✅
+ALLOWED_EXTENSIONS = {'json'}
+SESSION_UPLOAD_FOLDER = Path("uploaded_sessions")
+SESSION_UPLOAD_FOLDER.mkdir(exist_ok=True)
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 
 # Global state
 STATE = {
@@ -426,6 +436,66 @@ def clear_logs():
     with lock:
         STATE["logs"] = ["Logs cleared"]
     return jsonify({"success": True})
+
+@app.route('/api/clear_logs', methods=['POST'])
+def clear_logs():
+    with lock:
+        STATE["logs"] = ["Logs cleared"]
+    return jsonify({"success": True})
+
+    """Upload and import session file"""
+    try:
+        if 'session_file' not in request.files:
+            return jsonify({"success": False, "error": "No file selected"})
+        
+        file = request.files['session_file']
+        if file.filename == '':
+            return jsonify({"success": False, "error": "No file selected"})
+        
+        if file and allowed_file(file.filename):
+            # Secure filename and save
+            filename = secure_filename(file.filename)
+            file_path = SESSION_UPLOAD_FOLDER / filename
+            file.save(file_path)
+            
+            # Extract username from filename (assuming format: username.json)
+            username = filename.replace('.json', '')
+            
+            # Validate session file
+            try:
+                cl = Client()
+                setup_advanced_client(cl)
+                cl.load_settings(str(file_path))
+                
+                # Test session by getting account info
+                user_info = cl.account_info()
+                
+                # Move to main sessions directory
+                final_path = account_manager.sessions_dir / f"{username}.json"
+                shutil.move(file_path, final_path)
+                
+                # Reload accounts
+                account_manager.load_accounts()
+                
+                log(f"✅ Session imported successfully: {username}")
+                return jsonify({
+                    "success": True, 
+                    "message": f"Session imported successfully for {username}",
+                    "username": username
+                })
+                
+            except Exception as e:
+                # Clean up invalid file
+                if file_path.exists():
+                    file_path.unlink()
+                log(f"❌ Invalid session file: {str(e)[:100]}")
+                return jsonify({"success": False, "error": f"Invalid session file: {str(e)[:100]}"})
+        
+        return jsonify({"success": False, "error": "Only JSON files are allowed"})
+        
+    except Exception as e:
+        log(f"💥 Session upload error: {str(e)[:100]}")
+        return jsonify({"success": False, "error": f"Upload failed: {str(e)[:100]}"})
 
 # ---------- ULTIMATE UI ----------
 TEMPLATE = r'''<!DOCTYPE html>
@@ -984,6 +1054,20 @@ TEMPLATE = r'''<!DOCTYPE html>
                         </button>
                     </div>
                 </div>
+                    <!-- ✅✅✅ YEH NAYA BUTTON ADD KAREN ✅✅✅ -->
+    <div style="text-align: center; margin: 15px 0; color: #666; font-weight: 600;">OR</div>
+    
+    <div class="form-group">
+        <label class="input-label">📁 Import Session File:</label>
+        <input type="file" id="sessionFileInput" accept=".json" style="display: none;">
+        <button class="btn btn-secondary" onclick="document.getElementById('sessionFileInput').click()">
+            <span>📂 Browse Session File</span>
+        </button>
+        <div style="font-size: 12px; color: #666; text-align: center; margin-top: 8px;">
+            Select .json session file
+        </div>
+    </div>
+</div>
                 
                 <div class="section">
                     <div class="section-title">👥 Active Accounts</div>
