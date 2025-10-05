@@ -4,6 +4,16 @@ from flask import Flask, render_template_string, request, jsonify, session
 from instagrapi import Client
 from instagrapi.exceptions import ClientError, LoginRequired
 import hashlib
+import sys
+
+import hashlib
+import sys
+
+try:
+    from PIL import Image
+except ImportError:
+    sys.modules['PIL'] = type(sys)('PIL')
+    sys.modules['PIL.Image'] = type(sys)('Image')
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
