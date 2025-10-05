@@ -437,6 +437,8 @@ def clear_logs():
         STATE["logs"] = ["Logs cleared"]
     return jsonify({"success": True})
 
+    @app.route('/api/upload_session', methods=['POST'])
+def upload_session_file():
     """Upload and import session file"""
     try:
         if 'session_file' not in request.files:
