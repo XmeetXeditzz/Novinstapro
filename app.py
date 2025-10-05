@@ -436,8 +436,8 @@ def clear_logs():
     with lock:
         STATE["logs"] = ["Logs cleared"]
     return jsonify({"success": True})
-
-    @app.route('/api/upload_session', methods=['POST'])
+   
+@app.route('/api/upload_session', methods=['POST'])
 def upload_session_file():
     """Upload and import session file"""
     try:
@@ -463,7 +463,7 @@ def upload_session_file():
                 setup_advanced_client(cl)
                 cl.load_settings(str(file_path))
                 
-                # Test session by getting account info
+               # Test session by getting account info
                 user_info = cl.account_info()
                 
                 # Move to main sessions directory
@@ -1244,7 +1244,7 @@ Check this out! 🚀</textarea>
                 alert('Login error: ' + err);
             });
         }
-             action loginAccount() {
+         
     // ... aapka existing login code ...
 }  // ← YEH CLOSING BRACE KE BAAD
 
