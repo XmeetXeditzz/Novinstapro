@@ -11,19 +11,10 @@ import sys
 
 try:
     from PIL import Image
-    print("✅ Pillow loaded successfully")
+    HAS_PIL = True
 except ImportError:
-    print("⚠️ Pillow not available, using enhanced fake module")
-    # Better fake PIL module
-    class FakeImage:
-        def open(self, *args, **kwargs):
-            return self
-        def save(self, *args, **kwargs):
-            pass
-        def resize(self, *args, **kwargs):
-            return self
-        def convert(self, *args, **kwargs):
-            return self
+    HAS_PIL = False
+    print("Warning: PIL/Pillow not available - image features disabled")
     
     sys.modules['PIL'] = type(sys)('PIL')
     sys.modules['PIL.Image'] = FakeImage()
