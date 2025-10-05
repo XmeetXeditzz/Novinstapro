@@ -11,10 +11,22 @@ import sys
 
 try:
     from PIL import Image
+    print("✅ Pillow loaded successfully")
 except ImportError:
+    print("⚠️ Pillow not available, using enhanced fake module")
+    # Better fake PIL module
+    class FakeImage:
+        def open(self, *args, **kwargs):
+            return self
+        def save(self, *args, **kwargs):
+            pass
+        def resize(self, *args, **kwargs):
+            return self
+        def convert(self, *args, **kwargs):
+            return self
+    
     sys.modules['PIL'] = type(sys)('PIL')
-    sys.modules['PIL.Image'] = type(sys)('Image')
-
+    sys.modules['PIL.Image'] = FakeImage()
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
