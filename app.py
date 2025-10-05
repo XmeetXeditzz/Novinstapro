@@ -437,12 +437,6 @@ def clear_logs():
         STATE["logs"] = ["Logs cleared"]
     return jsonify({"success": True})
 
-@app.route('/api/clear_logs', methods=['POST'])
-def clear_logs():
-    with lock:
-        STATE["logs"] = ["Logs cleared"]
-    return jsonify({"success": True})
-
     """Upload and import session file"""
     try:
         if 'session_file' not in request.files:
@@ -1248,7 +1242,7 @@ Check this out! 🚀</textarea>
                 alert('Login error: ' + err);
             });
         }
-        function loginAccount() {
+             action loginAccount() {
     // ... aapka existing login code ...
 }  // ← YEH CLOSING BRACE KE BAAD
 
@@ -1367,7 +1361,7 @@ function toggleAccount(username) {
         }
        
         // Initialize
-        document.addEventListener('DOMContentLoaded', function() {/ ✅✅✅ YEH LINE ADD KAREN ✅✅✅
+        document.addEventListener('DOMContentLoaded', function() {
     // Add event listener for file input
     const fileInput = document.getElementById('sessionFileInput');
     if (fileInput) {
