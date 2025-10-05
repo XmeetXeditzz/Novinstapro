@@ -82,10 +82,10 @@ class AdvancedAccountManager:
             cl = Client()
             
             # Use advanced setup
-setup_advanced_client(cl)
+            setup_advanced_client(cl)
 
-# Add delay before login
-time.sleep(random.uniform(30, 60))
+            # Add delay before login
+            time.sleep(random.uniform(30, 60))
             
             if verification_code:
                 # OTP/2FA login
@@ -155,9 +155,6 @@ time.sleep(random.uniform(30, 60))
     def get_active_accounts(self):
         """Get all active accounts"""
         return [acc for acc in self.accounts.values() if acc['is_active']]
-
-# Initialize account manager
-account_manager = AdvancedAccountManager()
 
 # Initialize account manager
 account_manager = AdvancedAccountManager()
