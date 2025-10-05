@@ -16,7 +16,7 @@ except ImportError:
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
-# ✅✅✅ SESSION UPLOAD CONFIGURATION ADD KAREN ✅✅✅
+# ✅✅✅ SESSION UPLOAD CONFIGURATIOmN ADD KAREN ✅✅✅
 ALLOWED_EXTENSIONS = {'json'}
 SESSION_UPLOAD_FOLDER = Path("uploaded_sessions")
 SESSION_UPLOAD_FOLDER.mkdir(exist_ok=True)
