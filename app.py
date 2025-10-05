@@ -6,18 +6,12 @@ from instagrapi.exceptions import ClientError, LoginRequired
 import hashlib
 import sys
 
-import hashlib
-import sys
-
 try:
     from PIL import Image
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
     print("Warning: PIL/Pillow not available - image features disabled")
-    
-    sys.modules['PIL'] = type(sys)('PIL')
-    sys.modules['PIL.Image'] = FakeImage()
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
@@ -87,8 +81,11 @@ class AdvancedAccountManager:
         try:
             cl = Client()
             
-            # Set some headers to avoid detection
-            cl.set_user_agent("Instagram 219.0.0.12.117 Android")
+            # Use advanced setup
+setup_advanced_client(cl)
+
+# Add delay before login
+time.sleep(random.uniform(30, 60))
             
             if verification_code:
                 # OTP/2FA login
@@ -161,6 +158,55 @@ class AdvancedAccountManager:
 
 # Initialize account manager
 account_manager = AdvancedAccountManager()
+
+# Initialize account manager
+account_manager = AdvancedAccountManager()
+
+# ✅✅✅ ADD FROM HERE ✅✅✅
+def setup_advanced_client(client):
+    """Setup client with better mobile fingerprint"""
+    # Advanced device simulation
+    client.set_user_agent("Instagram 267.0.0.19.301 Android")
+    client.set_device({
+        "app_version": "267.0.0.19.301",
+        "android_version": 29,
+        "android_release": "10",
+        "dpi": "480dpi",
+        "resolution": "1080x1920",
+        "manufacturer": "OnePlus",
+        "device": "ONEPLUS A6013",
+        "model": "OnePlus6T",
+        "cpu": "qualcomm snapdragon 845",
+        "version_code": "314665256"
+    })
+    client.set_locale("en_US")
+    client.set_country("US")
+    client.set_country_code(1)
+    client.set_timezone_offset(-14400)  # EST
+
+def smart_login_with_retry(username, password, max_retries=3):
+    """Login with retries and smart delays"""
+    for attempt in range(max_retries):
+        try:
+            cl = Client()
+            setup_advanced_client(cl)
+            
+            # Random delay between attempts
+            delay = random.uniform(60, 120)  # 1-2 minutes
+            time.sleep(delay)
+            
+            cl.login(username, password)
+            return cl, True
+            
+        except Exception as e:
+            log(f"Login attempt {attempt+1} failed: {str(e)[:100]}")
+            if attempt < max_retries - 1:
+                retry_delay = random.uniform(300, 600)  # 5-10 minutes
+                log(f"Retrying in {retry_delay/60:.1f} minutes...")
+                time.sleep(retry_delay)
+    
+    return None, False
+# ✅✅✅ UPTO HERE ✅✅✅
 
 # ---------- MULTI-ACCOUNT MESSAGE SENDING ----------
 def send_message_multi_worker(account_data, thread_id, message):
