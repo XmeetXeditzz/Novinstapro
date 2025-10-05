@@ -1248,6 +1248,56 @@ Check this out! 🚀</textarea>
                 alert('Login error: ' + err);
             });
         }
+        function loginAccount() {
+    // ... aapka existing login code ...
+}  // ← YEH CLOSING BRACE KE BAAD
+
+// ✅✅✅ YEH NAYA FUNCTION YAHAN ADD KAREN ✅✅✅
+function handleSessionFileUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    if (!file.name.endsWith('.json')) {
+        alert('Please select a valid JSON session file');
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('session_file', file);
+    
+    // Show loading
+    const uploadButton = event.target.closest('.form-group').querySelector('button');
+    const originalText = uploadButton.querySelector('span').textContent;
+    uploadButton.querySelector('span').textContent = 'Uploading...';
+    uploadButton.disabled = true;
+    
+    fetch('/api/upload_session', {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            alert('✅ Session imported successfully!');
+            loadAccounts();
+        } else {
+            alert('❌ Import failed: ' + data.error);
+        }
+    })
+    .catch(err => {
+        alert('Upload error: ' + err);
+    })
+    .finally(() => {
+        // Reset button
+        uploadButton.querySelector('span').textContent = originalText;
+        uploadButton.disabled = false;
+        event.target.value = '';
+    });
+}
+
+function toggleAccount(username) {
+    // ... aapka existing toggleAccount code ...
+}
         
         function toggleAccount(username) {
             const accountCard = event.currentTarget;
@@ -1315,13 +1365,20 @@ Check this out! 🚀</textarea>
                 method: 'POST'
             });
         }
-        
+       
         // Initialize
-        document.addEventListener('DOMContentLoaded', function() {
-            loadAccounts();
-            statusInterval = setInterval(updateStatus, 2000);
-            updateStatus();
-        });
+        document.addEventListener('DOMContentLoaded', function() {/ ✅✅✅ YEH LINE ADD KAREN ✅✅✅
+    // Add event listener for file input
+    const fileInput = document.getElementById('sessionFileInput');
+    if (fileInput) {
+        fileInput.addEventListener('change', handleSessionFileUpload);
+    }
+    
+    loadAccounts();
+    statusInterval = setInterval(updateStatus, 2000);
+    updateStatus();
+});
+
     </script>
 </body>
 </html>'''
