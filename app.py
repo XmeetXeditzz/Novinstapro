@@ -29,7 +29,7 @@ def log(msg):
     STATE["logs"].append(f"[{ts}] {msg}")
     if len(STATE["logs"]) > 25:
         STATE["logs"] = STATE["logs"][-25:]
-    print(f"[{ts}] {msg}")  # Console print bhi
+    print(f"[{ts}] {msg}")
 
 # ---------- Advanced Account Management ----------
 class AdvancedAccountManager:
@@ -37,7 +37,7 @@ class AdvancedAccountManager:
         self.accounts = {}
         self.sessions_dir = Path("sessions")
         self.sessions_dir.mkdir(exist_ok=True)
-        self.pending_verification = {}  # Store pending logins needing OTP
+        self.pending_verification = {}
         self.load_accounts()
     
     def load_accounts(self):
@@ -65,8 +65,6 @@ class AdvancedAccountManager:
         """Login to Instagram account with OTP support"""
         try:
             cl = Client()
-            
-            # Set some headers to avoid detection
             cl.set_user_agent("Instagram 219.0.0.12.117 Android")
             
             if verification_code:
@@ -74,24 +72,13 @@ class AdvancedAccountManager:
                 log(f"🔄 Attempting login with OTP for {username}")
                 cl.login(username, password, verification_code=verification_code)
                 
-                # Clear pending verification
                 if username in self.pending_verification:
                     del self.pending_verification[username]
                     
             else:
-                # Regular login - MANUAL CHALLENGE HANDLING
+                # Regular login - SIMPLE APPROACH
                 log(f"🔄 Attempting regular login for {username}")
-                
-                try:
-                    cl.login(username, password)
-                except Exception as e:
-                    error_msg = str(e)
-                    # Check if this is a challenge that requires manual handling
-                    if "challenge_required" in error_msg.lower() or "enter code" in error_msg.lower():
-                        log(f"🔐 Challenge detected for {username}, initiating manual challenge flow")
-                        return self.handle_challenge_required(cl, username, password)
-                    else:
-                        raise e
+                cl.login(username, password)
             
             session_file = self.sessions_dir / f"{username}.json"
             cl.dump_settings(str(session_file))
@@ -115,67 +102,19 @@ class AdvancedAccountManager:
             error_msg = str(e)
             log(f"❌ Login error for {username}: {error_msg}")
             
-            # Check for OTP requirement
-            if any(keyword in error_msg.lower() for keyword in ["checkpoint", "verification", "challenge", "2fa", "two-factor", "enter code"]):
+            # Check for ANY kind of verification requirement
+            if any(keyword in error_msg.lower() for keyword in ["checkpoint", "verification", "challenge", "2fa", "two-factor", "enter code", "security code", "confirm"]):
                 log(f"🔐 OTP REQUIRED DETECTED for {username}")
                 # Store login credentials for OTP verification
                 self.pending_verification[username] = {
                     'password': password,
-                    'client': cl,
+                    'client': Client(),
                     'timestamp': time.time()
                 }
+                self.pending_verification[username]['client'].set_user_agent("Instagram 219.0.0.12.117 Android")
                 return False, "verification_required"
             else:
                 return False, error_msg
-    
-    def handle_challenge_required(self, cl, username, password):
-        """Handle Instagram challenge requirement"""
-        try:
-            log(f"🔄 Handling challenge for {username}")
-            
-            # Get challenge code
-            challenge_code = self.pending_verification.get(username, {}).get('challenge_code')
-            if not challenge_code:
-                # Store client for later verification
-                self.pending_verification[username] = {
-                    'password': password,
-                    'client': cl,
-                    'timestamp': time.time(),
-                    'needs_challenge': True
-                }
-                log(f"📱 Challenge required for {username} - waiting for code input")
-                return False, "verification_required"
-            
-            # If we have challenge code, resume login
-            log(f"🔄 Resuming login with challenge code for {username}")
-            cl.login(username, password, verification_code=challenge_code)
-            
-            session_file = self.sessions_dir / f"{username}.json"
-            cl.dump_settings(str(session_file))
-            
-            user_info = cl.account_info()
-            
-            self.accounts[username] = {
-                'client': cl,
-                'username': username,
-                'full_name': user_info.full_name,
-                'status': 'online',
-                'session_file': session_file,
-                'is_active': False,
-                'worker_id': None
-            }
-            
-            # Clear pending verification
-            if username in self.pending_verification:
-                del self.pending_verification[username]
-            
-            log(f"✅ Challenge completed successfully for {username}")
-            return True, None
-            
-        except Exception as e:
-            error_msg = str(e)
-            log(f"❌ Challenge handling failed for {username}: {error_msg}")
-            return False, error_msg
     
     def complete_verification(self, username, verification_code):
         """Complete login with verification code"""
@@ -190,15 +129,8 @@ class AdvancedAccountManager:
             
             log(f"🔄 Completing verification for {username} with OTP: {verification_code}")
             
-            # Check if this is a challenge verification
-            if pending_data.get('needs_challenge'):
-                log(f"🔄 Processing challenge verification for {username}")
-                # Store the challenge code and retry login
-                self.pending_verification[username]['challenge_code'] = verification_code
-                return self.handle_challenge_required(cl, username, password)
-            else:
-                # Regular OTP verification
-                cl.login(username, password, verification_code=verification_code)
+            # Complete login with verification code
+            cl.login(username, password, verification_code=verification_code)
             
             session_file = self.sessions_dir / f"{username}.json"
             cl.dump_settings(str(session_file))
@@ -226,7 +158,7 @@ class AdvancedAccountManager:
             log(f"❌ OTP verification failed for {username}: {error_msg}")
             
             # Check if it's a wrong code error
-            if "wrong code" in error_msg.lower():
+            if "wrong code" in error_msg.lower() or "invalid code" in error_msg.lower():
                 return False, "Wrong verification code. Please check and try again."
             else:
                 return False, error_msg
@@ -286,12 +218,10 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
         last_rate_check = start_time
         messages_since_check = 0
         
-        # Update max messages in state
         with lock:
             STATE["stats"]["max_messages"] = max_per_run
             STATE["active_workers"] = len(accounts_list)
 
-        # Create send tasks distributed across accounts
         send_tasks = []
         account_index = 0
         
@@ -319,11 +249,9 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
                 future = executor.submit(send_message_multi_worker, account, tid, message)
                 futures.append(future)
                 
-                # Control sending speed
                 if messages_per_second > 0:
                     time.sleep(1.0 / messages_per_second)
 
-            # Process results
             for future in concurrent.futures.as_completed(futures):
                 try:
                     success, username = future.result()
@@ -345,7 +273,6 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
                         STATE["stats"]["failed"] += 1
                     log(f"❌ Future error: {str(e)[:200]}")
 
-                # Update rate every 2 seconds
                 current_time = time.time()
                 if current_time - last_rate_check >= 2.0:
                     actual_rate = (messages_since_check / (current_time - last_rate_check)) if (current_time - last_rate_check) > 0 else 0
@@ -354,17 +281,14 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
                     messages_since_check = 0
                     last_rate_check = current_time
 
-                # Progress updates
                 if STATE["stats"]["sent"] % 10 == 0:
                     progress = (STATE["stats"]["sent"] / max_per_run) * 100
                     log(f"📈 Progress: {STATE['stats']['sent']}/{max_per_run} ({progress:.1f}%)")
 
-                # Check if we've reached max messages
                 if STATE["stats"]["sent"] >= max_per_run:
                     log(f"🎯 Reached maximum messages limit: {max_per_run}")
                     break
 
-        # Final stats
         total_time = time.time() - start_time
         final_rate = STATE["stats"]["sent"] / total_time if total_time > 0 else 0
 
@@ -380,7 +304,6 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
             STATE["status"] = "idle"
             STATE["active_workers"] = 0
         WORKER["stop_flag"] = False
-        # Deactivate all accounts
         for account in accounts_list:
             account_manager.deactivate_account(account['username'])
 
@@ -1244,96 +1167,6 @@ TEMPLATE = r'''<!DOCTYPE html>
         .security-notice strong {
             display: block;
             margin-bottom: 5px;
-        }
-    </style>
-    <style>
-        /* Mobile responsive styles */
-        @media (max-width: 768px) {
-            .container {
-                padding: 10px;
-                max-width: 100%;
-            }
-            .header {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 15px;
-                padding: 20px;
-            }
-            .main-layout {
-                display: block;
-                min-height: auto;
-            }
-            .sidebar {
-                width: 100%;
-                border-radius: 15px;
-                padding: 25px;
-                margin-bottom: 20px;
-            }
-            .main-content {
-                width: 100%;
-                border-radius: 15px;
-                padding: 25px;
-            }
-            .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-                gap: 15px;
-            }
-            .account-card, .chat-item {
-                padding: 15px;
-                font-size: 14px;
-            }
-            .btn {
-                font-size: 16px;
-                padding: 18px 20px;
-            }
-            .form-input, .message-input {
-                font-size: 16px;
-                padding: 16px;
-            }
-            .message-box {
-                font-size: 16px;
-                min-height: 150px;
-            }
-            .stat-number {
-                font-size: 32px;
-            }
-            .stat-label {
-                font-size: 12px;
-            }
-            .slider-container {
-                gap: 15px;
-            }
-            .value-display {
-                font-size: 18px;
-                min-width: 60px;
-            }
-            .logs-panel {
-                height: 200px;
-                font-size: 12px;
-            }
-            .action-buttons {
-                grid-template-columns: 1fr;
-                gap: 15px;
-            }
-            .otp-modal {
-                padding: 30px 25px;
-                margin: 20px;
-            }
-            .otp-actions {
-                flex-direction: column;
-            }
-        }
-        
-        @media (max-width: 480px) {
-            .stats-grid {
-                grid-template-columns: 1fr;
-            }
-            .login-section {
-                padding: 40px 20px;
-            }
-            .login-title {
-                font-size: 28px;
-            }
         }
     </style>
 </head>
