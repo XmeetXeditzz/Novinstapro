@@ -29,6 +29,7 @@ def log(msg):
     STATE["logs"].append(f"[{ts}] {msg}")
     if len(STATE["logs"]) > 25:
         STATE["logs"] = STATE["logs"][-25:]
+    print(f"[{ts}] {msg}")  # Console print bhi
 
 # ---------- Advanced Account Management ----------
 class AdvancedAccountManager:
@@ -102,11 +103,12 @@ class AdvancedAccountManager:
             
         except Exception as e:
             error_msg = str(e)
-            log(f"❌ Login error for {username}: {error_msg[:200]}")
+            log(f"❌ Login error for {username}: {error_msg}")
             
-            if "checkpoint" in error_msg.lower() or "verification" in error_msg.lower():
+            # Check for OTP requirement
+            if any(keyword in error_msg.lower() for keyword in ["checkpoint", "verification", "challenge", "2fa", "two-factor"]):
+                log(f"🔐 OTP REQUIRED DETECTED for {username}")
                 # Store login credentials for OTP verification
-                log(f"🔐 OTP required for {username}")
                 self.pending_verification[username] = {
                     'password': password,
                     'client': Client(),
@@ -114,15 +116,6 @@ class AdvancedAccountManager:
                 }
                 self.pending_verification[username]['client'].set_user_agent("Instagram 219.0.0.12.117 Android")
                 return False, "verification_required"
-            elif "challenge" in error_msg.lower():
-                log(f"🔐 Challenge required for {username}")
-                self.pending_verification[username] = {
-                    'password': password,
-                    'client': Client(),
-                    'timestamp': time.time()
-                }
-                self.pending_verification[username]['client'].set_user_agent("Instagram 219.0.0.12.117 Android")
-                return False, "challenge_required"
             else:
                 return False, error_msg
     
@@ -137,7 +130,7 @@ class AdvancedAccountManager:
             cl = pending_data['client']
             password = pending_data['password']
             
-            log(f"🔄 Completing verification for {username} with OTP")
+            log(f"🔄 Completing verification for {username} with OTP: {verification_code}")
             
             # Complete login with verification code
             cl.login(username, password, verification_code=verification_code)
@@ -165,7 +158,7 @@ class AdvancedAccountManager:
             
         except Exception as e:
             error_msg = str(e)
-            log(f"❌ OTP verification failed for {username}: {error_msg[:200]}")
+            log(f"❌ OTP verification failed for {username}: {error_msg}")
             return False, error_msg
     
     def get_client(self, username):
@@ -1601,8 +1594,6 @@ TEMPLATE = r'''<!DOCTYPE html>
         function toggleAccountSelection(username) {
             if (selectedAccounts.has(username)) {
                 selectedAccounts.delete(username);
-                // Note: We can't call account_manager directly from frontend
-                // This will be handled in backend when sending starts
             } else {
                 selectedAccounts.add(username);
             }
@@ -1663,7 +1654,7 @@ TEMPLATE = r'''<!DOCTYPE html>
             })
             .then(r => r.json())
             .then(result => {
-                console.log('Login response:', result); // Debug log
+                console.log('Login response:', result);
                 if (result.ok) {
                     if (result.requires_verification) {
                         // Show OTP modal
@@ -1693,6 +1684,7 @@ TEMPLATE = r'''<!DOCTYPE html>
         }
         
         function showOtpModal() {
+            console.log('Showing OTP modal for:', pendingUsername);
             const modal = document.getElementById('otp_modal');
             modal.classList.remove('hidden');
             document.getElementById('otp_code').value = '';
@@ -1717,6 +1709,8 @@ TEMPLATE = r'''<!DOCTYPE html>
                 return;
             }
             
+            console.log('Submitting OTP for:', pendingUsername, 'Code:', verificationCode);
+            
             fetch('/verify_otp', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1727,7 +1721,7 @@ TEMPLATE = r'''<!DOCTYPE html>
             })
             .then(r => r.json())
             .then(result => {
-                console.log('OTP verification response:', result); // Debug log
+                console.log('OTP verification response:', result);
                 if (result.ok) {
                     hideOtpModal();
                     currentAccount = pendingUsername;
@@ -1942,19 +1936,23 @@ def login():
     payload = request.get_json(force=True)
     username = payload.get("username")
     password = payload.get("password")
-    verification_code = payload.get("verification_code")
     
     if not username or not password:
         return jsonify({"ok": False, "message": "Username and password required"})
     
-    success, error_type = account_manager.login_account(username, password, verification_code)
+    success, error_type = account_manager.login_account(username, password)
     
     if success:
         log(f"✅ Account added: {username}")
         return jsonify({"ok": True, "message": "Login successful"})
     else:
         if error_type == "verification_required":
-            return jsonify({"ok": False, "requires_verification": True, "message": "Verification code required"})
+            log(f"🔐 OTP required for {username}")
+            return jsonify({
+                "ok": False, 
+                "requires_verification": True, 
+                "message": "Verification code required"
+            })
         else:
             return jsonify({"ok": False, "message": f"Login failed: {error_type}"})
 
@@ -2090,4 +2088,5 @@ if __name__ == "__main__":
     print("⚡ Speed control: 1-20 messages/second")
     print("🎯 Custom max messages: 1-10,000")
     print("🔥 REAL-TIME MULTI-ACCOUNT WORKING")
+    print("\n🔧 DEBUG MODE: OTP detection enabled")
     app.run(host='0.0.0.0', port=5000, debug=False)
