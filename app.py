@@ -43,6 +43,7 @@ class AdvancedAccountManager:
         self.accounts = {}
         self.sessions_dir = Path("sessions")
         self.sessions_dir.mkdir(exist_ok=True)
+        self.pending_verification = {}  # Store pending logins needing OTP
         self.load_accounts()
     
     def load_accounts(self):
@@ -77,6 +78,11 @@ class AdvancedAccountManager:
             if verification_code:
                 # OTP/2FA login
                 cl.login(username, password, verification_code=verification_code)
+                
+                # Clear pending verification
+                if username in self.pending_verification:
+                    del self.pending_verification[username]
+                    
             else:
                 # Regular login
                 cl.login(username, password)
@@ -101,11 +107,61 @@ class AdvancedAccountManager:
         except Exception as e:
             error_msg = str(e)
             if "checkpoint" in error_msg.lower() or "verification" in error_msg.lower():
+                # Store login credentials for OTP verification
+                self.pending_verification[username] = {
+                    'password': password,
+                    'client': Client(),
+                    'timestamp': time.time()
+                }
+                self.pending_verification[username]['client'].set_user_agent("Instagram 219.0.0.12.117 Android")
                 return False, "verification_required"
             elif "challenge" in error_msg.lower():
+                self.pending_verification[username] = {
+                    'password': password,
+                    'client': Client(),
+                    'timestamp': time.time()
+                }
+                self.pending_verification[username]['client'].set_user_agent("Instagram 219.0.0.12.117 Android")
                 return False, "challenge_required"
             else:
                 return False, error_msg
+    
+    def complete_verification(self, username, verification_code):
+        """Complete login with verification code"""
+        if username not in self.pending_verification:
+            return False, "No pending verification found"
+        
+        try:
+            pending_data = self.pending_verification[username]
+            cl = pending_data['client']
+            password = pending_data['password']
+            
+            # Complete login with verification code
+            cl.login(username, password, verification_code=verification_code)
+            
+            session_file = self.sessions_dir / f"{username}.json"
+            cl.dump_settings(str(session_file))
+            
+            user_info = cl.account_info()
+            
+            self.accounts[username] = {
+                'client': cl,
+                'username': username,
+                'full_name': user_info.full_name,
+                'status': 'online',
+                'session_file': session_file,
+                'is_active': False,
+                'worker_id': None
+            }
+            
+            # Clear pending verification
+            del self.pending_verification[username]
+            
+            return True, None
+            
+        except Exception as e:
+            error_msg = str(e)
+            return False, error_msg
     
     def get_client(self, username):
         """Get client for username"""
@@ -988,6 +1044,139 @@ TEMPLATE = r'''<!DOCTYPE html>
             font-size: 18px;
             margin-top: 10px;
         }
+        
+        /* Instagram-like OTP Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(5px);
+        }
+        
+        .otp-modal {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 450px;
+            width: 90%;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            animation: modalSlideIn 0.3s ease-out;
+        }
+        
+        @keyframes modalSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-50px) scale(0.9);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+        
+        .otp-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+        
+        .otp-title {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 15px;
+            color: var(--dark);
+        }
+        
+        .otp-subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            line-height: 1.5;
+        }
+        
+        .otp-input-group {
+            margin: 30px 0;
+        }
+        
+        .otp-input {
+            width: 100%;
+            padding: 20px;
+            font-size: 18px;
+            text-align: center;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            background: #f8f9fa;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            letter-spacing: 2px;
+        }
+        
+        .otp-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            background: white;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            transform: translateY(-2px);
+        }
+        
+        .otp-actions {
+            display: flex;
+            gap: 15px;
+            margin-top: 25px;
+        }
+        
+        .otp-btn {
+            flex: 1;
+            padding: 16px;
+            border: none;
+            border-radius: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .otp-btn-primary {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            color: white;
+        }
+        
+        .otp-btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+        }
+        
+        .otp-btn-secondary {
+            background: #f8f9fa;
+            color: var(--dark);
+            border: 2px solid #e9ecef;
+        }
+        
+        .otp-btn-secondary:hover {
+            background: white;
+            transform: translateY(-2px);
+        }
+        
+        .security-notice {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 20px 0;
+            text-align: left;
+            font-size: 14px;
+            color: #856404;
+        }
+        
+        .security-notice strong {
+            display: block;
+            margin-bottom: 5px;
+        }
     </style>
     <style>
         /* Mobile responsive styles */
@@ -1058,6 +1247,13 @@ TEMPLATE = r'''<!DOCTYPE html>
                 grid-template-columns: 1fr;
                 gap: 15px;
             }
+            .otp-modal {
+                padding: 30px 25px;
+                margin: 20px;
+            }
+            .otp-actions {
+                flex-direction: column;
+            }
         }
         
         @media (max-width: 480px) {
@@ -1126,14 +1322,6 @@ TEMPLATE = r'''<!DOCTYPE html>
                         <div class="form-group">
                             <label class="form-label">Password</label>
                             <input type="password" id="password" class="form-input" placeholder="Enter password" autocomplete="current-password">
-                        </div>
-                        
-                        <div class="form-group" id="verification_group" style="display: none;">
-                            <label class="form-label">Verification Code (OTP)</label>
-                            <input type="text" id="verification_code" class="form-input" placeholder="Enter OTP sent to your email/phone">
-                            <small style="color: #666; margin-top: 5px; display: block;">
-                                🔐 Check your email or phone for the verification code
-                            </small>
                         </div>
                         
                         <button class="btn btn-primary" onclick="loginAccount()" id="login_btn">
@@ -1238,11 +1426,43 @@ TEMPLATE = r'''<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- OTP Verification Modal -->
+    <div id="otp_modal" class="modal-overlay hidden">
+        <div class="otp-modal">
+            <div class="otp-icon">🔐</div>
+            <div class="otp-title">Security Check Required</div>
+            <div class="otp-subtitle">
+                For your security, Instagram needs to verify it's you. 
+                Please enter the 6-digit code sent to your email or phone.
+            </div>
+            
+            <div class="security-notice">
+                <strong>🔒 Security Notice</strong>
+                This verification helps keep your account secure. The code will expire shortly.
+            </div>
+            
+            <div class="otp-input-group">
+                <input type="text" id="otp_code" class="otp-input" placeholder="Enter 6-digit code" maxlength="6" 
+                       pattern="[0-9]{6}" inputmode="numeric" autocomplete="one-time-code">
+            </div>
+            
+            <div class="otp-actions">
+                <button class="otp-btn otp-btn-secondary" onclick="cancelVerification()">
+                    Cancel
+                </button>
+                <button class="otp-btn otp-btn-primary" onclick="submitVerification()">
+                    Verify & Continue
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let currentAccount = null;
         let selectedChats = new Set();
         let selectedAccounts = new Set();
         let showingLogin = false;
+        let pendingUsername = null;
         
         // Initialize speed slider
         const speedSlider = document.getElementById('speed_slider');
@@ -1255,6 +1475,18 @@ TEMPLATE = r'''<!DOCTYPE html>
         const maxMessagesInput = document.getElementById('max_messages_input');
         maxMessagesInput.addEventListener('input', function() {
             document.getElementById('max_messages_display').textContent = this.value;
+        });
+
+        // OTP input formatting
+        const otpInput = document.getElementById('otp_code');
+        otpInput.addEventListener('input', function(e) {
+            // Only allow numbers
+            this.value = this.value.replace(/[^0-9]/g, '');
+            
+            // Auto-submit when 6 digits entered
+            if (this.value.length === 6) {
+                submitVerification();
+            }
         });
         
         function updateUI(state) {
@@ -1321,7 +1553,7 @@ TEMPLATE = r'''<!DOCTYPE html>
                         <div class="account-name">${account.username}</div>
                         <div class="account-status">
                             <div class="status-indicator status-${account.status}"></div>
-                            ${account.status} ${account.is_active ? '• 🟢 Active' : '• 🔴 Inactive'}
+                            ${account.status} ${account.is_active ? '• 🟢 Active' : '🔴 Inactive'}
                         </div>
                     </div>
                     <div class="account-select"></div>
@@ -1397,8 +1629,6 @@ TEMPLATE = r'''<!DOCTYPE html>
         function showLogin() {
             document.getElementById('username').value = '';
             document.getElementById('password').value = '';
-            document.getElementById('verification_code').value = '';
-            document.getElementById('verification_group').style.display = 'none';
             document.getElementById('login_status').style.display = 'none';
             document.getElementById('login_section').classList.remove('hidden');
             document.getElementById('control_section').classList.add('hidden');
@@ -1408,7 +1638,6 @@ TEMPLATE = r'''<!DOCTYPE html>
         function loginAccount() {
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
-            const verificationCode = document.getElementById('verification_code').value;
             
             if (!username || !password) {
                 showLoginStatus('Please enter username and password', 'error');
@@ -1424,16 +1653,17 @@ TEMPLATE = r'''<!DOCTYPE html>
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     username: username,
-                    password: password,
-                    verification_code: verificationCode
+                    password: password
                 })
             })
             .then(r => r.json())
             .then(result => {
                 if (result.ok) {
                     if (result.requires_verification) {
-                        document.getElementById('verification_group').style.display = 'block';
-                        showLoginStatus('🔐 Enter verification code sent to your email/phone', 'warning');
+                        // Show OTP modal
+                        pendingUsername = username;
+                        showOtpModal();
+                        showLoginStatus('🔐 Security verification required', 'warning');
                     } else {
                         currentAccount = username;
                         showingLogin = false;
@@ -1446,10 +1676,74 @@ TEMPLATE = r'''<!DOCTYPE html>
                     showLoginStatus('❌ ' + result.message, 'error');
                 }
             })
+            .catch(err => {
+                showLoginStatus('❌ Network error: ' + err.message, 'error');
+            })
             .finally(() => {
                 btn.disabled = false;
                 btn.innerHTML = '<span>🚀</span> Login to Instagram';
             });
+        }
+        
+        function showOtpModal() {
+            const modal = document.getElementById('otp_modal');
+            modal.classList.remove('hidden');
+            document.getElementById('otp_code').value = '';
+            document.getElementById('otp_code').focus();
+        }
+        
+        function hideOtpModal() {
+            const modal = document.getElementById('otp_modal');
+            modal.classList.add('hidden');
+        }
+        
+        function submitVerification() {
+            const verificationCode = document.getElementById('otp_code').value;
+            
+            if (!verificationCode || verificationCode.length !== 6) {
+                alert('Please enter a valid 6-digit code');
+                return;
+            }
+            
+            if (!pendingUsername) {
+                alert('No pending verification found');
+                return;
+            }
+            
+            fetch('/verify_otp', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    username: pendingUsername,
+                    verification_code: verificationCode
+                })
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.ok) {
+                    hideOtpModal();
+                    currentAccount = pendingUsername;
+                    showingLogin = false;
+                    showLoginStatus('✅ Verification successful! Account added.', 'success');
+                    pendingUsername = null;
+                    setTimeout(() => {
+                        fetchState();
+                    }, 1500);
+                } else {
+                    showLoginStatus('❌ ' + result.message, 'error');
+                    document.getElementById('otp_code').value = '';
+                    document.getElementById('otp_code').focus();
+                }
+            })
+            .catch(err => {
+                showLoginStatus('❌ Network error: ' + err.message, 'error');
+            });
+        }
+        
+        function cancelVerification() {
+            hideOtpModal();
+            pendingUsername = null;
+            showLoginStatus('Verification cancelled', 'warning');
         }
         
         function showLoginStatus(message, type) {
@@ -1654,6 +1948,25 @@ def login():
             return jsonify({"ok": False, "requires_verification": True, "message": "Verification code required"})
         else:
             return jsonify({"ok": False, "message": f"Login failed: {error_type}"})
+
+@app.route("/verify_otp", methods=["POST"])
+def verify_otp():
+    """Complete login with OTP verification"""
+    payload = request.get_json(force=True)
+    username = payload.get("username")
+    verification_code = payload.get("verification_code")
+    
+    if not username or not verification_code:
+        return jsonify({"ok": False, "message": "Username and verification code required"})
+    
+    success, error_msg = account_manager.complete_verification(username, verification_code)
+    
+    if success:
+        log(f"✅ Account verified and added: {username}")
+        return jsonify({"ok": True, "message": "Verification successful"})
+    else:
+        log(f"❌ OTP verification failed for {username}: {error_msg}")
+        return jsonify({"ok": False, "message": f"Verification failed: {error_msg}"})
 
 @app.route("/switch_account", methods=["POST"])
 def switch_account():
