@@ -23,13 +23,6 @@ STATE = {
 WORKER = {"threads": [], "stop_flag": False}
 lock = threading.Lock()
 
-# Multiple Accounts Manager
-ACCOUNTS_MANAGER = {
-    "accounts": {},
-    "active_sessions": {},
-    "worker_status": {}
-}
-
 # ---------- Logging ----------
 def log(msg):
     ts = time.strftime("%H:%M:%S")
@@ -77,6 +70,7 @@ class AdvancedAccountManager:
             
             if verification_code:
                 # OTP/2FA login
+                log(f"🔄 Attempting login with OTP for {username}")
                 cl.login(username, password, verification_code=verification_code)
                 
                 # Clear pending verification
@@ -85,6 +79,7 @@ class AdvancedAccountManager:
                     
             else:
                 # Regular login
+                log(f"🔄 Attempting regular login for {username}")
                 cl.login(username, password)
             
             session_file = self.sessions_dir / f"{username}.json"
@@ -102,12 +97,16 @@ class AdvancedAccountManager:
                 'worker_id': None
             }
             
+            log(f"✅ Successfully logged in: {username}")
             return True, None
             
         except Exception as e:
             error_msg = str(e)
+            log(f"❌ Login error for {username}: {error_msg[:200]}")
+            
             if "checkpoint" in error_msg.lower() or "verification" in error_msg.lower():
                 # Store login credentials for OTP verification
+                log(f"🔐 OTP required for {username}")
                 self.pending_verification[username] = {
                     'password': password,
                     'client': Client(),
@@ -116,6 +115,7 @@ class AdvancedAccountManager:
                 self.pending_verification[username]['client'].set_user_agent("Instagram 219.0.0.12.117 Android")
                 return False, "verification_required"
             elif "challenge" in error_msg.lower():
+                log(f"🔐 Challenge required for {username}")
                 self.pending_verification[username] = {
                     'password': password,
                     'client': Client(),
@@ -129,12 +129,15 @@ class AdvancedAccountManager:
     def complete_verification(self, username, verification_code):
         """Complete login with verification code"""
         if username not in self.pending_verification:
+            log(f"❌ No pending verification found for {username}")
             return False, "No pending verification found"
         
         try:
             pending_data = self.pending_verification[username]
             cl = pending_data['client']
             password = pending_data['password']
+            
+            log(f"🔄 Completing verification for {username} with OTP")
             
             # Complete login with verification code
             cl.login(username, password, verification_code=verification_code)
@@ -157,10 +160,12 @@ class AdvancedAccountManager:
             # Clear pending verification
             del self.pending_verification[username]
             
+            log(f"✅ OTP verification successful for {username}")
             return True, None
             
         except Exception as e:
             error_msg = str(e)
+            log(f"❌ OTP verification failed for {username}: {error_msg[:200]}")
             return False, error_msg
     
     def get_client(self, username):
@@ -1596,10 +1601,10 @@ TEMPLATE = r'''<!DOCTYPE html>
         function toggleAccountSelection(username) {
             if (selectedAccounts.has(username)) {
                 selectedAccounts.delete(username);
-                account_manager.deactivate_account(username);
+                // Note: We can't call account_manager directly from frontend
+                // This will be handled in backend when sending starts
             } else {
                 selectedAccounts.add(username);
-                account_manager.activate_account(username);
             }
             updateMultiAccountInfo();
             fetchState();
@@ -1658,6 +1663,7 @@ TEMPLATE = r'''<!DOCTYPE html>
             })
             .then(r => r.json())
             .then(result => {
+                console.log('Login response:', result); // Debug log
                 if (result.ok) {
                     if (result.requires_verification) {
                         // Show OTP modal
@@ -1677,6 +1683,7 @@ TEMPLATE = r'''<!DOCTYPE html>
                 }
             })
             .catch(err => {
+                console.error('Login error:', err);
                 showLoginStatus('❌ Network error: ' + err.message, 'error');
             })
             .finally(() => {
@@ -1720,6 +1727,7 @@ TEMPLATE = r'''<!DOCTYPE html>
             })
             .then(r => r.json())
             .then(result => {
+                console.log('OTP verification response:', result); // Debug log
                 if (result.ok) {
                     hideOtpModal();
                     currentAccount = pendingUsername;
@@ -1736,6 +1744,7 @@ TEMPLATE = r'''<!DOCTYPE html>
                 }
             })
             .catch(err => {
+                console.error('OTP verification error:', err);
                 showLoginStatus('❌ Network error: ' + err.message, 'error');
             });
         }
