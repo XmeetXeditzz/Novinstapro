@@ -79,9 +79,19 @@ class AdvancedAccountManager:
                     del self.pending_verification[username]
                     
             else:
-                # Regular login
+                # Regular login - MANUAL CHALLENGE HANDLING
                 log(f"🔄 Attempting regular login for {username}")
-                cl.login(username, password)
+                
+                try:
+                    cl.login(username, password)
+                except Exception as e:
+                    error_msg = str(e)
+                    # Check if this is a challenge that requires manual handling
+                    if "challenge_required" in error_msg.lower() or "enter code" in error_msg.lower():
+                        log(f"🔐 Challenge detected for {username}, initiating manual challenge flow")
+                        return self.handle_challenge_required(cl, username, password)
+                    else:
+                        raise e
             
             session_file = self.sessions_dir / f"{username}.json"
             cl.dump_settings(str(session_file))
@@ -106,18 +116,66 @@ class AdvancedAccountManager:
             log(f"❌ Login error for {username}: {error_msg}")
             
             # Check for OTP requirement
-            if any(keyword in error_msg.lower() for keyword in ["checkpoint", "verification", "challenge", "2fa", "two-factor"]):
+            if any(keyword in error_msg.lower() for keyword in ["checkpoint", "verification", "challenge", "2fa", "two-factor", "enter code"]):
                 log(f"🔐 OTP REQUIRED DETECTED for {username}")
                 # Store login credentials for OTP verification
                 self.pending_verification[username] = {
                     'password': password,
-                    'client': Client(),
+                    'client': cl,
                     'timestamp': time.time()
                 }
-                self.pending_verification[username]['client'].set_user_agent("Instagram 219.0.0.12.117 Android")
                 return False, "verification_required"
             else:
                 return False, error_msg
+    
+    def handle_challenge_required(self, cl, username, password):
+        """Handle Instagram challenge requirement"""
+        try:
+            log(f"🔄 Handling challenge for {username}")
+            
+            # Get challenge code
+            challenge_code = self.pending_verification.get(username, {}).get('challenge_code')
+            if not challenge_code:
+                # Store client for later verification
+                self.pending_verification[username] = {
+                    'password': password,
+                    'client': cl,
+                    'timestamp': time.time(),
+                    'needs_challenge': True
+                }
+                log(f"📱 Challenge required for {username} - waiting for code input")
+                return False, "verification_required"
+            
+            # If we have challenge code, resume login
+            log(f"🔄 Resuming login with challenge code for {username}")
+            cl.login(username, password, verification_code=challenge_code)
+            
+            session_file = self.sessions_dir / f"{username}.json"
+            cl.dump_settings(str(session_file))
+            
+            user_info = cl.account_info()
+            
+            self.accounts[username] = {
+                'client': cl,
+                'username': username,
+                'full_name': user_info.full_name,
+                'status': 'online',
+                'session_file': session_file,
+                'is_active': False,
+                'worker_id': None
+            }
+            
+            # Clear pending verification
+            if username in self.pending_verification:
+                del self.pending_verification[username]
+            
+            log(f"✅ Challenge completed successfully for {username}")
+            return True, None
+            
+        except Exception as e:
+            error_msg = str(e)
+            log(f"❌ Challenge handling failed for {username}: {error_msg}")
+            return False, error_msg
     
     def complete_verification(self, username, verification_code):
         """Complete login with verification code"""
@@ -132,8 +190,15 @@ class AdvancedAccountManager:
             
             log(f"🔄 Completing verification for {username} with OTP: {verification_code}")
             
-            # Complete login with verification code
-            cl.login(username, password, verification_code=verification_code)
+            # Check if this is a challenge verification
+            if pending_data.get('needs_challenge'):
+                log(f"🔄 Processing challenge verification for {username}")
+                # Store the challenge code and retry login
+                self.pending_verification[username]['challenge_code'] = verification_code
+                return self.handle_challenge_required(cl, username, password)
+            else:
+                # Regular OTP verification
+                cl.login(username, password, verification_code=verification_code)
             
             session_file = self.sessions_dir / f"{username}.json"
             cl.dump_settings(str(session_file))
@@ -159,7 +224,12 @@ class AdvancedAccountManager:
         except Exception as e:
             error_msg = str(e)
             log(f"❌ OTP verification failed for {username}: {error_msg}")
-            return False, error_msg
+            
+            # Check if it's a wrong code error
+            if "wrong code" in error_msg.lower():
+                return False, "Wrong verification code. Please check and try again."
+            else:
+                return False, error_msg
     
     def get_client(self, username):
         """Get client for username"""
