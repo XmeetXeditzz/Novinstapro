@@ -1,26 +1,12 @@
-import time, threading, random, json, os, concurrent.futures, secrets, shutil
+import time, threading, random, json, os, concurrent.futures, secrets
 from pathlib import Path
-from flask import Flask, render_template_string, request, jsonify, redirect, session
+from flask import Flask, render_template_string, request, jsonify, session
 from instagrapi import Client
 from instagrapi.exceptions import ClientError, LoginRequired
-from werkzeug.utils import secure_filename
-import requests
+import hashlib
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
-
-# Configuration
-ALLOWED_EXTENSIONS = {'json'}
-SESSION_UPLOAD_FOLDER = Path("uploaded_sessions")
-SESSION_UPLOAD_FOLDER.mkdir(exist_ok=True)
-
-# Instagram OAuth Configuration (Yeh aapko Instagram Developer se milenge)
-INSTAGRAM_APP_ID = os.environ.get('INSTAGRAM_APP_ID', '')
-INSTAGRAM_APP_SECRET = os.environ.get('INSTAGRAM_APP_SECRET', '')
-INSTAGRAM_REDIRECT_URI = os.environ.get('INSTAGRAM_REDIRECT_URI', '')
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # Global state
 STATE = {
@@ -37,13 +23,19 @@ STATE = {
 WORKER = {"threads": [], "stop_flag": False}
 lock = threading.Lock()
 
+# Multiple Accounts Manager
+ACCOUNTS_MANAGER = {
+    "accounts": {},
+    "active_sessions": {},
+    "worker_status": {}
+}
+
 # ---------- Logging ----------
 def log(msg):
     ts = time.strftime("%H:%M:%S")
-    with lock:
-        STATE["logs"].append(f"[{ts}] {msg}")
-        if len(STATE["logs"]) > 25:
-            STATE["logs"] = STATE["logs"][-25:]
+    STATE["logs"].append(f"[{ts}] {msg}")
+    if len(STATE["logs"]) > 25:
+        STATE["logs"] = STATE["logs"][-25:]
 
 # ---------- Advanced Account Management ----------
 class AdvancedAccountManager:
@@ -161,7 +153,6 @@ def send_message_multi_worker(account_data, thread_id, message):
         account_data['client'].direct_send(message, thread_ids=[thread_id])
         return True, account_data['username']
     except Exception as e:
-        log(f"❌ Send failed from {account_data['username']}: {str(e)[:100]}")
         return False, account_data['username']
 
 def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_per_second, max_per_run):
@@ -269,79 +260,1338 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
         for account in accounts_list:
             account_manager.deactivate_account(account['username'])
 
-# ---------- Instagram Official OAuth Login ----------
-@app.route('/instagram/login')
-def instagram_oauth_login():
-    """Redirect to Instagram's official login page"""
-    if not INSTAGRAM_APP_ID:
-        return jsonify({"success": False, "error": "Instagram OAuth not configured"})
-    
-    auth_url = (
-        f"https://api.instagram.com/oauth/authorize?"
-        f"client_id={INSTAGRAM_APP_ID}&"
-        f"redirect_uri={INSTAGRAM_REDIRECT_URI}&"
-        f"scope=user_profile,user_media&"
-        f"response_type=code"
-    )
-    return redirect(auth_url)
-
-@app.route('/instagram/callback')
-def instagram_oauth_callback():
-    """Handle Instagram OAuth callback"""
-    try:
-        code = request.args.get('code')
-        
-        if not code:
-            return jsonify({"success": False, "error": "Authorization code missing"})
-        
-        # Exchange code for access token
-        token_data = {
-            'client_id': INSTAGRAM_APP_ID,
-            'client_secret': INSTAGRAM_APP_SECRET,
-            'grant_type': 'authorization_code',
-            'redirect_uri': INSTAGRAM_REDIRECT_URI,
-            'code': code
+# ---------- ULTIMATE UI ----------
+TEMPLATE = r'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NovaGram Pro • Multi-Account DM Manager</title>
+    <style>
+        :root {
+            --primary: #667eea;
+            --primary-dark: #5a67d8;
+            --secondary: #764ba2;
+            --success: #51cf66;
+            --danger: #ff6b6b;
+            --warning: #ffd43b;
+            --dark: #2d3748;
+            --light: #f8f9fa;
         }
         
-        response = requests.post(
-            'https://api.instagram.com/oauth/access_token',
-            data=token_data
-        )
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
         
-        if response.status_code == 200:
-            token_info = response.json()
-            access_token = token_info.get('access_token')
-            user_id = token_info.get('user_id')
-            
-            # Get user profile information
-            profile_url = f"https://graph.instagram.com/{user_id}?fields=id,username&access_token={access_token}"
-            profile_response = requests.get(profile_url)
-            
-            if profile_response.status_code == 200:
-                profile_data = profile_response.json()
-                username = profile_data.get('username')
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 25px;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .logo {
+            font-size: 32px;
+            font-weight: 800;
+            background: linear-gradient(45deg, #405de6, #5851db, #833ab4, #c13584, #e1306c, #fd1d1d);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .credit {
+            font-size: 14px;
+            color: #666;
+            text-align: right;
+            font-weight: 500;
+        }
+        
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 20px;
+            background: white;
+            border-radius: 25px;
+            border: 2px solid #e9ecef;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #8e8e8e;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .status-running { background: var(--success); }
+        .status-error { background: var(--danger); }
+        .status-warning { background: var(--warning); }
+        
+        .main-layout {
+            display: grid;
+            grid-template-columns: 400px 1fr;
+            gap: 30px;
+            min-height: 700px;
+        }
+        
+        .sidebar {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .section {
+            margin-bottom: 35px;
+        }
+        
+        .section-title {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 25px;
+            color: var(--dark);
+            border-bottom: 3px solid var(--light);
+            padding-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .section-title::before {
+            content: '';
+            width: 4px;
+            height: 20px;
+            background: var(--primary);
+            border-radius: 2px;
+        }
+        
+        .account-card {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 20px;
+            border-radius: 15px;
+            cursor: pointer;
+            margin-bottom: 12px;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+            background: var(--light);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .account-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+            transition: left 0.5s;
+        }
+        
+        .account-card:hover::before {
+            left: 100%;
+        }
+        
+        .account-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.15);
+        }
+        
+        .account-card.active {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            color: white;
+            border-color: var(--primary-dark);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+        }
+        
+        .account-avatar {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: linear-gradient(45deg, #405de6, #5851db, #833ab4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 20px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .account-info {
+            flex: 1;
+        }
+        
+        .account-name {
+            font-weight: 700;
+            font-size: 16px;
+            margin-bottom: 4px;
+        }
+        
+        .account-status {
+            font-size: 13px;
+            opacity: 0.8;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #8e8e8e;
+        }
+        
+        .status-online { background: var(--success); }
+        .status-offline { background: var(--danger); }
+        .status-working { background: var(--warning); }
+        
+        .account-select {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            background: white;
+            transition: all 0.3s ease;
+        }
+        
+        .account-card.active .account-select {
+            background: var(--primary-dark);
+            border-color: var(--primary-dark);
+        }
+        
+        .account-card.active .account-select::after {
+            content: '✓';
+            color: white;
+            font-size: 12px;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+        
+        .chat-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 18px;
+            border-radius: 15px;
+            cursor: pointer;
+            margin-bottom: 10px;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+            background: var(--light);
+        }
+        
+        .chat-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .chat-item.selected {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            color: white;
+            border-color: var(--primary-dark);
+        }
+        
+        .chat-avatar {
+            width: 45px;
+            height: 45px;
+            border-radius: 50%;
+            background: var(--dark);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 16px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .chat-name {
+            font-weight: 600;
+            font-size: 15px;
+        }
+        
+        .btn {
+            padding: 16px 28px;
+            border: none;
+            border-radius: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            width: 100%;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transition: left 0.5s;
+        }
+        
+        .btn:hover::before {
+            left: 100%;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-danger {
+            background: linear-gradient(135deg, var(--danger) 0%, #ee5a24 100%);
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(255, 107, 107, 0.4);
+        }
+        
+        .btn-secondary {
+            background: white;
+            color: var(--dark);
+            border: 2px solid #e9ecef;
+        }
+        
+        .btn-secondary:hover {
+            background: var(--light);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .btn-success {
+            background: linear-gradient(135deg, var(--success) 0%, #40c057 100%);
+            color: white;
+        }
+        
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(81, 207, 102, 0.4);
+        }
+        
+        .main-content {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 35px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .login-section {
+            text-align: center;
+            padding: 60px 40px;
+        }
+        
+        .login-title {
+            font-size: 36px;
+            font-weight: 800;
+            margin-bottom: 50px;
+            background: linear-gradient(45deg, #405de6, #5851db, #833ab4);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .login-form {
+            max-width: 450px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .form-group {
+            text-align: left;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: var(--dark);
+        }
+        
+        .form-input {
+            padding: 18px 25px;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            font-size: 16px;
+            background: white;
+            transition: all 0.3s ease;
+            width: 100%;
+        }
+        
+        .form-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            transform: translateY(-1px);
+        }
+        
+        .control-section {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 25px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            padding: 30px;
+            border-radius: 20px;
+            text-align: center;
+            color: white;
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.1), transparent);
+            transform: rotate(45deg);
+            animation: shine 3s infinite;
+        }
+        
+        @keyframes shine {
+            0% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+            100% { transform: translateX(100%) translateY(100%) rotate(45deg); }
+        }
+        
+        .stat-number {
+            font-size: 42px;
+            font-weight: 800;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+        }
+        
+        .stat-label {
+            font-size: 14px;
+            opacity: 0.9;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            font-weight: 600;
+        }
+        
+        .control-panel {
+            background: var(--light);
+            padding: 30px;
+            border-radius: 20px;
+            margin: 20px 0;
+        }
+        
+        .control-group {
+            margin-bottom: 25px;
+        }
+        
+        .control-label {
+            display: block;
+            margin-bottom: 12px;
+            font-weight: 700;
+            color: var(--dark);
+            font-size: 16px;
+        }
+        
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 25px;
+            margin-top: 15px;
+        }
+        
+        .slider {
+            flex: 1;
+            height: 8px;
+            background: #e9ecef;
+            border-radius: 4px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 24px;
+            height: 24px;
+            background: var(--primary);
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+            border: 3px solid white;
+        }
+        
+        .value-display {
+            min-width: 70px;
+            text-align: center;
+            font-weight: 800;
+            font-size: 20px;
+            color: var(--primary);
+            background: white;
+            padding: 8px 15px;
+            border-radius: 10px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .message-inputs {
+            margin: 25px 0;
+        }
+        
+        .message-input-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .message-input {
+            flex: 1;
+            padding: 18px 25px;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            font-size: 16px;
+            background: white;
+            transition: all 0.3s ease;
+        }
+        
+        .message-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .remove-message-btn {
+            background: var(--danger);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            cursor: pointer;
+            font-size: 20px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            transition: all 0.3s ease;
+        }
+        
+        .remove-message-btn:hover {
+            background: #ee5a24;
+            transform: scale(1.1) rotate(90deg);
+        }
+        
+        .add-message-btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            cursor: pointer;
+            font-size: 24px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 20px auto;
+            transition: all 0.3s ease;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+        }
+        
+        .add-message-btn:hover {
+            background: var(--primary-dark);
+            transform: scale(1.1) rotate(90deg);
+        }
+        
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin: 25px 0;
+            padding: 20px;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 3px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .progress-container {
+            margin: 25px 0;
+        }
+        
+        .progress-header {
+            display: flex;
+            justify-content: between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 12px;
+            background: #e9ecef;
+            border-radius: 6px;
+            overflow: hidden;
+            margin: 15px 0;
+            box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            transition: width 0.5s ease;
+            border-radius: 6px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .progress-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+            animation: progressShine 2s infinite;
+        }
+        
+        @keyframes progressShine {
+            0% { left: -100%; }
+            100% { left: 100%; }
+        }
+        
+        .action-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 30px 0;
+        }
+        
+        .logs-panel {
+            background: #1a1a1a;
+            border: 2px solid #333;
+            border-radius: 15px;
+            padding: 25px;
+            height: 250px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 14px;
+            margin-top: 30px;
+            color: #00ff00;
+            box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.5);
+        }
+        
+        .log-entry {
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .log-time {
+            color: #888;
+            margin-right: 10px;
+            min-width: 70px;
+        }
+        
+        .hidden {
+            display: none !important;
+        }
+        
+        .multi-account-info {
+            background: linear-gradient(135deg, var(--warning) 0%, #fcc419 100%);
+            color: var(--dark);
+            padding: 20px;
+            border-radius: 15px;
+            margin: 20px 0;
+            text-align: center;
+            font-weight: 600;
+        }
+        
+        .accounts-counter {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            font-size: 18px;
+            margin-top: 10px;
+        }
+    </style>
+    <style>
+        /* Mobile responsive styles */
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+                max-width: 100%;
+            }
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 15px;
+                padding: 20px;
+            }
+            .main-layout {
+                display: block;
+                min-height: auto;
+            }
+            .sidebar {
+                width: 100%;
+                border-radius: 15px;
+                padding: 25px;
+                margin-bottom: 20px;
+            }
+            .main-content {
+                width: 100%;
+                border-radius: 15px;
+                padding: 25px;
+            }
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 15px;
+            }
+            .account-card, .chat-item {
+                padding: 15px;
+                font-size: 14px;
+            }
+            .btn {
+                font-size: 16px;
+                padding: 18px 20px;
+            }
+            .form-input, .message-input {
+                font-size: 16px;
+                padding: 16px;
+            }
+            .message-box {
+                font-size: 16px;
+                min-height: 150px;
+            }
+            .stat-number {
+                font-size: 32px;
+            }
+            .stat-label {
+                font-size: 12px;
+            }
+            .slider-container {
+                gap: 15px;
+            }
+            .value-display {
+                font-size: 18px;
+                min-width: 60px;
+            }
+            .logs-panel {
+                height: 200px;
+                font-size: 12px;
+            }
+            .action-buttons {
+                grid-template-columns: 1fr;
+                gap: 15px;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            .login-section {
+                padding: 40px 20px;
+            }
+            .login-title {
+                font-size: 28px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <div class="logo">NovaGram Pro</div>
+                <div class="credit">Multi-Account DM Manager • By Nova (@novaflexed)</div>
+            </div>
+            <div class="status-badge">
+                <div class="status-dot" id="status_dot"></div>
+                <span id="status_text">Ready</span>
+                <span id="active_workers">• 0 Workers</span>
+            </div>
+        </div>
+        
+        <div class="main-layout">
+            <!-- Sidebar -->
+            <div class="sidebar">
+                <div class="section">
+                    <div class="section-title">👥 Accounts Manager</div>
+                    <div id="accounts_list">
+                        <!-- Accounts will be loaded here -->
+                    </div>
+                    <button class="btn btn-secondary" onclick="showLogin()">
+                        <span>➕</span> Add New Account
+                    </button>
+                </div>
                 
-                # Store session (you might want to save the access_token properly)
-                log(f"✅ Instagram OAuth login successful: {username}")
-                
-                return f"""
-                <html>
-                    <body>
-                        <script>
-                            alert('Instagram login successful for {username}! However, for sending DMs you need to use manual login method.');
-                            window.close();
-                        </script>
-                    </body>
-                </html>
-                """
-            else:
-                return jsonify({"success": False, "error": "Failed to get user profile"})
-        else:
-            return jsonify({"success": False, "error": "Failed to get access token"})
+                <div class="section">
+                    <div class="section-title">💬 Conversations</div>
+                    <div id="chats_list">
+                        <!-- Chats will be loaded here -->
+                    </div>
+                    <button class="btn btn-secondary" onclick="loadChats()" id="refresh_chats_btn">
+                        <span>🔄</span> Refresh Chats
+                    </button>
+                </div>
+            </div>
             
-    except Exception as e:
-        log(f"❌ OAuth callback error: {str(e)[:200]}")
-        return jsonify({"success": False, "error": str(e)[:200]})
+            <!-- Main Content -->
+            <div class="main-content">
+                <!-- Login Section -->
+                <div id="login_section" class="login-section">
+                    <div class="login-title">Add Instagram Account</div>
+                    
+                    <div class="login-form">
+                        <div class="form-group">
+                            <label class="form-label">Username</label>
+                            <input type="text" id="username" class="form-input" placeholder="Enter Instagram username" autocomplete="username">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label">Password</label>
+                            <input type="password" id="password" class="form-input" placeholder="Enter password" autocomplete="current-password">
+                        </div>
+                        
+                        <div class="form-group" id="verification_group" style="display: none;">
+                            <label class="form-label">Verification Code (OTP)</label>
+                            <input type="text" id="verification_code" class="form-input" placeholder="Enter OTP sent to your email/phone">
+                            <small style="color: #666; margin-top: 5px; display: block;">
+                                🔐 Check your email or phone for the verification code
+                            </small>
+                        </div>
+                        
+                        <button class="btn btn-primary" onclick="loginAccount()" id="login_btn">
+                            <span>🚀</span> Login to Instagram
+                        </button>
+                        <div id="login_status" style="font-size: 14px; margin-top: 20px; padding: 15px; border-radius: 10px; display: none;"></div>
+                    </div>
+                </div>
+                
+                <!-- Control Section -->
+                <div id="control_section" class="control-section hidden">
+                    <!-- Multi-Account Info -->
+                    <div class="multi-account-info" id="multi_account_info" style="display: none;">
+                        <div>🎯 Multi-Account Mode Active</div>
+                        <div class="accounts-counter">
+                            <span id="active_accounts_count">0</span> accounts selected for sending
+                        </div>
+                    </div>
+                    
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-number" id="sent_count">0</div>
+                            <div class="stat-label">Messages Sent</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-number" id="failed_count">0</div>
+                            <div class="stat-label">Failed</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-number" id="rate_display">0</div>
+                            <div class="stat-label">Per Second</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-number" id="max_messages_display">100</div>
+                            <div class="stat-label">Max Messages</div>
+                        </div>
+                    </div>
+                    
+                    <div class="control-panel">
+                        <div class="control-group">
+                            <label class="control-label">⚡ Messages Per Second</label>
+                            <div class="slider-container">
+                                <input type="range" min="1" max="20" value="5" class="slider" id="speed_slider">
+                                <div class="value-display" id="speed_value">5/s</div>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <label class="control-label">🎯 Maximum Messages to Send</label>
+                            <input type="number" min="1" max="10000" value="100" class="form-input" id="max_messages_input">
+                        </div>
+                    </div>
+                    
+                    <div class="message-inputs">
+                        <label class="control-label">💌 Messages (Randomly Selected)</label>
+                        <div id="message_inputs">
+                            <div class="message-input-container">
+                                <input type="text" class="message-input" placeholder="Enter message" value="Hello! 👋">
+                                <button class="remove-message-btn" onclick="removeMessage(this)">-</button>
+                            </div>
+                            <div class="message-input-container">
+                                <input type="text" class="message-input" placeholder="Enter message" value="This is NovaGram Pro Multi-Account DM Manager! 🚀">
+                                <button class="remove-message-btn" onclick="removeMessage(this)">-</button>
+                            </div>
+                            <div class="message-input-container">
+                                <input type="text" class="message-input" placeholder="Enter message" value="Hope you're having an amazing day! ✨">
+                                <button class="remove-message-btn" onclick="removeMessage(this)">-</button>
+                            </div>
+                        </div>
+                        <button class="add-message-btn" onclick="addMessage()">+</button>
+                    </div>
+                    
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="opt_in_confirm">
+                        <label for="opt_in_confirm">✅ I confirm recipients have opted in to receive messages</label>
+                    </div>
+                    
+                    <div class="progress-container">
+                        <div class="progress-header">
+                            <span>📊 Progress</span>
+                            <span id="progress_text">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progress_fill" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="action-buttons">
+                        <button class="btn btn-success" onclick="startSending()" id="start_btn">
+                            <span>🚀</span> Start Multi-Account Sending
+                        </button>
+                        <button class="btn btn-danger" onclick="stopSending()" id="stop_btn">
+                            <span>⏹️</span> Stop All Workers
+                        </button>
+                    </div>
+                    
+                    <div class="logs-panel" id="logs_container">
+                        <!-- Logs will be loaded here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentAccount = null;
+        let selectedChats = new Set();
+        let selectedAccounts = new Set();
+        let showingLogin = false;
+        
+        // Initialize speed slider
+        const speedSlider = document.getElementById('speed_slider');
+        const speedValue = document.getElementById('speed_value');
+        speedSlider.addEventListener('input', function() {
+            speedValue.textContent = this.value + '/s';
+        });
+
+        // Initialize max messages input
+        const maxMessagesInput = document.getElementById('max_messages_input');
+        maxMessagesInput.addEventListener('input', function() {
+            document.getElementById('max_messages_display').textContent = this.value;
+        });
+        
+        function updateUI(state) {
+            // Update status
+            document.getElementById('status_text').textContent = state.status;
+            document.getElementById('status_dot').className = 'status-dot status-' + state.status;
+            document.getElementById('active_workers').textContent = `• ${state.active_workers || 0} Workers`;
+            
+            // Update stats
+            document.getElementById('sent_count').textContent = state.stats.sent;
+            document.getElementById('failed_count').textContent = state.stats.failed;
+            document.getElementById('rate_display').textContent = state.stats.rate;
+            document.getElementById('max_messages_display').textContent = state.stats.max_messages || 100;
+            
+            // Update progress
+            const maxMessages = state.stats.max_messages || 100;
+            const progress = Math.min(100, (state.stats.sent / maxMessages) * 100);
+            document.getElementById('progress_fill').style.width = progress + '%';
+            document.getElementById('progress_text').textContent = Math.round(progress) + '%';
+            
+            // Update accounts
+            updateAccountsList(state.accounts || []);
+            
+            // Update chats
+            updateChatsList(state.threads || []);
+            
+            // Update multi-account info
+            updateMultiAccountInfo();
+            
+            // Update logs
+            const logsContainer = document.getElementById('logs_container');
+            logsContainer.innerHTML = state.logs.map(log => {
+                const parts = log.split(']');
+                const time = parts[0] + ']';
+                const message = parts.slice(1).join(']');
+                return `<div class="log-entry"><span class="log-time">${time}</span>${message}</div>`;
+            }).join('');
+            logsContainer.scrollTop = logsContainer.scrollHeight;
+            
+            // Show/hide sections
+            if (state.accounts && state.accounts.length > 0 && !showingLogin) {
+                document.getElementById('login_section').classList.add('hidden');
+                document.getElementById('control_section').classList.remove('hidden');
+                document.getElementById('refresh_chats_btn').classList.remove('hidden');
+            } else {
+                document.getElementById('login_section').classList.remove('hidden');
+                document.getElementById('control_section').classList.add('hidden');
+                document.getElementById('refresh_chats_btn').classList.add('hidden');
+            }
+        }
+        
+        function updateAccountsList(accounts) {
+            const container = document.getElementById('accounts_list');
+            container.innerHTML = '';
+            
+            accounts.forEach(account => {
+                const div = document.createElement('div');
+                div.className = `account-card ${selectedAccounts.has(account.username) ? 'active' : ''}`;
+                div.onclick = () => toggleAccountSelection(account.username);
+                
+                div.innerHTML = `
+                    <div class="account-avatar">${account.username.charAt(0).toUpperCase()}</div>
+                    <div class="account-info">
+                        <div class="account-name">${account.username}</div>
+                        <div class="account-status">
+                            <div class="status-indicator status-${account.status}"></div>
+                            ${account.status} ${account.is_active ? '• 🟢 Active' : '• 🔴 Inactive'}
+                        </div>
+                    </div>
+                    <div class="account-select"></div>
+                `;
+                
+                container.appendChild(div);
+            });
+        }
+        
+        function updateChatsList(threads) {
+            const container = document.getElementById('chats_list');
+            container.innerHTML = '';
+            
+            threads.forEach(thread => {
+                const div = document.createElement('div');
+                div.className = `chat-item ${selectedChats.has(thread.id) ? 'selected' : ''}`;
+                div.onclick = () => toggleChat(thread.id);
+                
+                div.innerHTML = `
+                    <div class="chat-avatar">${thread.name.charAt(0).toUpperCase()}</div>
+                    <div class="chat-name">${thread.name}</div>
+                `;
+                
+                container.appendChild(div);
+            });
+        }
+        
+        function updateMultiAccountInfo() {
+            const infoDiv = document.getElementById('multi_account_info');
+            const countSpan = document.getElementById('active_accounts_count');
+            
+            if (selectedAccounts.size > 0) {
+                infoDiv.style.display = 'block';
+                countSpan.textContent = selectedAccounts.size;
+            } else {
+                infoDiv.style.display = 'none';
+            }
+        }
+        
+        function toggleAccountSelection(username) {
+            if (selectedAccounts.has(username)) {
+                selectedAccounts.delete(username);
+                account_manager.deactivate_account(username);
+            } else {
+                selectedAccounts.add(username);
+                account_manager.activate_account(username);
+            }
+            updateMultiAccountInfo();
+            fetchState();
+        }
+        
+        function toggleChat(chatId) {
+            if (selectedChats.has(chatId)) {
+                selectedChats.delete(chatId);
+            } else {
+                selectedChats.add(chatId);
+            }
+            fetchState();
+        }
+
+        function switchAccount(username) {
+            currentAccount = username;
+            fetch('/switch_account', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({username: username})
+            }).then(() => {
+                loadChats();
+                fetchState();
+            });
+        }
+        
+        function showLogin() {
+            document.getElementById('username').value = '';
+            document.getElementById('password').value = '';
+            document.getElementById('verification_code').value = '';
+            document.getElementById('verification_group').style.display = 'none';
+            document.getElementById('login_status').style.display = 'none';
+            document.getElementById('login_section').classList.remove('hidden');
+            document.getElementById('control_section').classList.add('hidden');
+            showingLogin = true;
+        }
+        
+        function loginAccount() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const verificationCode = document.getElementById('verification_code').value;
+            
+            if (!username || !password) {
+                showLoginStatus('Please enter username and password', 'error');
+                return;
+            }
+            
+            const btn = document.getElementById('login_btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span>⏳</span> Logging in...';
+            
+            fetch('/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    username: username,
+                    password: password,
+                    verification_code: verificationCode
+                })
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.ok) {
+                    if (result.requires_verification) {
+                        document.getElementById('verification_group').style.display = 'block';
+                        showLoginStatus('🔐 Enter verification code sent to your email/phone', 'warning');
+                    } else {
+                        currentAccount = username;
+                        showingLogin = false;
+                        showLoginStatus('✅ Login successful!', 'success');
+                        setTimeout(() => {
+                            fetchState();
+                        }, 1500);
+                    }
+                } else {
+                    showLoginStatus('❌ ' + result.message, 'error');
+                }
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = '<span>🚀</span> Login to Instagram';
+            });
+        }
+        
+        function showLoginStatus(message, type) {
+            const statusDiv = document.getElementById('login_status');
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+            statusDiv.style.background = type === 'error' ? '#ff6b6b' : 
+                                       type === 'warning' ? '#ffd43b' : '#51cf66';
+            statusDiv.style.color = type === 'warning' ? '#333' : 'white';
+        }
+        
+        function loadChats() {
+            if (!currentAccount && selectedAccounts.size === 0) {
+                alert('Please select at least one account');
+                return;
+            }
+            
+            const accountToUse = currentAccount || Array.from(selectedAccounts)[0];
+            
+            fetch('/load_chats', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({username: accountToUse})
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (!result.ok) {
+                    alert('Error: ' + result.message);
+                }
+                fetchState();
+            });
+        }
+        
+        function startSending() {
+            if (selectedChats.size === 0) {
+                alert('Please select at least one conversation');
+                return;
+            }
+            
+            if (selectedAccounts.size === 0) {
+                alert('Please select at least one account');
+                return;
+            }
+            
+            // Collect messages
+            const messageInputs = document.querySelectorAll('.message-input');
+            const messagesArray = [];
+            messageInputs.forEach(input => {
+                if (input.value.trim()) {
+                    messagesArray.push(input.value.trim());
+                }
+            });
+            if (messagesArray.length === 0) {
+                alert('Please enter messages');
+                return;
+            }
+            
+            if (!document.getElementById('opt_in_confirm').checked) {
+                alert('Please confirm opt-in');
+                return;
+            }
+            
+            const payload = {
+                accounts: Array.from(selectedAccounts),
+                thread_ids: Array.from(selectedChats),
+                messages: messagesArray,
+                messages_per_second: parseInt(speedSlider.value),
+                max_per_run: parseInt(maxMessagesInput.value) || 100
+            };
+            
+            fetch('/start_multi', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.ok) {
+                    alert('🚀 Multi-account sending started with ' + selectedAccounts.size + ' accounts!');
+                } else {
+                    alert('Error: ' + result.message);
+                }
+                fetchState();
+            })
+            .catch(err => {
+                console.error('Start sending error:', err);
+                alert('Failed to start sending messages.');
+            });
+        }
+        
+        function stopSending() {
+            fetch('/stop', {method: 'POST'})
+            .then(r => r.json())
+            .then(result => {
+                alert(result.message);
+                fetchState();
+            })
+            .catch(err => {
+                console.error('Stop sending error:', err);
+                alert('Failed to stop sending messages.');
+            });
+        }
+        
+        function fetchState() {
+            fetch('/state')
+            .then(r => r.json())
+            .then(state => {
+                updateUI(state);
+            })
+            .catch(err => {
+                console.error('Fetch state error:', err);
+            });
+        }
+        
+        function addMessage() {
+            const container = document.getElementById('message_inputs');
+            const addBtn = container.querySelector('.add-message-btn');
+
+            const newContainer = document.createElement('div');
+            newContainer.className = 'message-input-container';
+
+            newContainer.innerHTML = `
+                <input type="text" class="message-input" placeholder="Enter message">
+                <button class="remove-message-btn" onclick="removeMessage(this)">-</button>
+            `;
+
+            container.insertBefore(newContainer, addBtn);
+        }
+
+        function removeMessage(btn) {
+            const containers = document.querySelectorAll('.message-input-container');
+            if (containers.length > 1) {
+                btn.closest('.message-input-container').remove();
+            }
+        }
+
+        // Auto-refresh
+        setInterval(fetchState, 2000);
+        fetchState();
+    </script>
+</body>
+</html>'''
 
 # ---------- Chat Management ----------
 def load_chats_for_account(username):
@@ -374,311 +1624,148 @@ def load_chats_for_account(username):
         log(f"❌ Failed to load chats: {str(e)[:200]}")
         return False, str(e)[:200]
 
-# ---------- FLASK ROUTES ----------
-@app.route('/')
+# ---------- Routes ----------
+@app.route("/")
 def index():
     return render_template_string(TEMPLATE)
 
-@app.route('/api/accounts', methods=['GET'])
-def get_accounts():
-    accounts = account_manager.get_accounts_list()
-    return jsonify({"accounts": accounts})
+@app.route("/state")
+def get_state():
+    STATE["accounts"] = account_manager.get_accounts_list()
+    return jsonify(STATE)
 
-@app.route('/api/login', methods=['POST'])
-def login_account():
-    data = request.json
-    username = data.get('username')
-    password = data.get('password')
-    verification_code = data.get('verification_code')
+@app.route("/login", methods=["POST"])
+def login():
+    payload = request.get_json(force=True)
+    username = payload.get("username")
+    password = payload.get("password")
+    verification_code = payload.get("verification_code")
     
     if not username or not password:
-        return jsonify({"success": False, "error": "Username and password required"})
+        return jsonify({"ok": False, "message": "Username and password required"})
     
-    success, error = account_manager.login_account(username, password, verification_code)
+    success, error_type = account_manager.login_account(username, password, verification_code)
     
     if success:
-        return jsonify({"success": True, "message": "Login successful"})
+        log(f"✅ Account added: {username}")
+        return jsonify({"ok": True, "message": "Login successful"})
     else:
-        return jsonify({"success": False, "error": error})
+        if error_type == "verification_required":
+            return jsonify({"ok": False, "requires_verification": True, "message": "Verification code required"})
+        else:
+            return jsonify({"ok": False, "message": f"Login failed: {error_type}"})
 
-@app.route('/api/account/toggle', methods=['POST'])
-def toggle_account():
-    data = request.json
-    username = data.get('username')
-    activate = data.get('activate', False)
+@app.route("/switch_account", methods=["POST"])
+def switch_account():
+    payload = request.get_json(force=True)
+    username = payload.get("username")
     
-    if activate:
-        success = account_manager.activate_account(username)
-        if success:
-            return jsonify({"success": True, "message": f"Account {username} activated"})
+    if username in account_manager.accounts:
+        STATE["current_account"] = username
+        STATE["threads"] = []
+        log(f"🔄 Switched to account: {username}")
+        return jsonify({"ok": True, "message": f"Switched to {username}"})
     else:
-        success = account_manager.deactivate_account(username)
-        if success:
-            return jsonify({"success": True, "message": f"Account {username} deactivated"})
-    
-    return jsonify({"success": False, "error": "Account not found"})
+        return jsonify({"ok": False, "message": "Account not found"})
 
-@app.route('/api/start', methods=['POST'])
-def start_sending():
-    if STATE["running"]:
-        return jsonify({"success": False, "error": "Already running"})
-    
-    data = request.json
-    thread_ids = data.get('thread_ids', [])
-    messages = data.get('messages', [])
-    messages_per_second = data.get('messages_per_second', 1)
-    max_messages = data.get('max_messages', 100)
-    
-    if not thread_ids or not messages:
-        return jsonify({"success": False, "error": "Thread IDs and messages required"})
-    
-    active_accounts = account_manager.get_active_accounts()
-    if not active_accounts:
-        return jsonify({"success": False, "error": "No active accounts selected"})
-    
-    # Reset stats
-    with lock:
-        STATE["running"] = True
-        STATE["status"] = "running"
-        STATE["stats"] = {"sent": 0, "failed": 0, "rate": 0, "max_messages": max_messages}
-        WORKER["stop_flag"] = False
-    
-    # Start worker thread
-    thread = threading.Thread(
-        target=multi_account_sender_worker,
-        args=(active_accounts, thread_ids, messages, messages_per_second, max_messages)
-    )
-    thread.daemon = True
-    thread.start()
-    
-    log(f"🚀 Started sending with {len(active_accounts)} accounts")
-    return jsonify({"success": True, "message": "Sending started"})
-
-@app.route('/api/stop', methods=['POST'])
-def stop_sending():
-    WORKER["stop_flag"] = True
-    with lock:
-        STATE["running"] = False
-        STATE["status"] = "stopping"
-    log("🛑 Stop signal sent")
-    return jsonify({"success": True, "message": "Stopping..."})
-
-@app.route('/api/status', methods=['GET'])
-def get_status():
-    with lock:
-        return jsonify({
-            "running": STATE["running"],
-            "status": STATE["status"],
-            "logs": STATE["logs"][-10:],
-            "stats": STATE["stats"],
-            "last_response": STATE["last_response"],
-            "active_workers": STATE["active_workers"]
-        })
-
-@app.route('/api/clear_logs', methods=['POST'])
-def clear_logs():
-    with lock:
-        STATE["logs"] = ["Logs cleared"]
-    return jsonify({"success": True})
-
-@app.route('/api/load_chats', methods=['POST'])
+@app.route("/load_chats", methods=["POST"])
 def load_chats():
-    data = request.json
-    username = data.get('username')
-    
-    if not username:
-        return jsonify({"success": False, "error": "Username required"})
+    payload = request.get_json(force=True)
+    username = payload.get("username")
     
     success, message = load_chats_for_account(username)
-    return jsonify({"success": success, "message": message})
+    return jsonify({"ok": success, "message": message})
 
-@app.route('/api/upload_session', methods=['POST'])
-def upload_session_file():
-    """Upload and import session file"""
+@app.route("/start_multi", methods=["POST"])
+def start_multi_sending():
+    if STATE["running"]:
+        return jsonify({"ok": False, "message": "Already running"})
+
+    payload = request.get_json(force=True)
+    accounts = payload.get("accounts", [])
+    thread_ids = payload.get("thread_ids", [])
+    messages = payload.get("messages", [])
+
+    if not thread_ids:
+        return jsonify({"ok": False, "message": "Select conversations"})
+
+    if not messages:
+        return jsonify({"ok": False, "message": "Enter messages"})
+
+    if not accounts:
+        return jsonify({"ok": False, "message": "Select accounts"})
+
     try:
-        if 'session_file' not in request.files:
-            return jsonify({"success": False, "error": "No file selected"})
-        
-        file = request.files['session_file']
-        if file.filename == '':
-            return jsonify({"success": False, "error": "No file selected"})
-        
-        if file and allowed_file(file.filename):
-            # Secure filename and save
-            filename = secure_filename(file.filename)
-            file_path = SESSION_UPLOAD_FOLDER / filename
-            file.save(file_path)
-            
-            # Extract username from filename (assuming format: username.json)
-            username = filename.replace('.json', '')
-            
-            # Validate session file
-            try:
-                cl = Client()
-                cl.set_user_agent("Instagram 219.0.0.12.117 Android")
-                cl.load_settings(str(file_path))
-                
-                # Test session by getting account info
-                user_info = cl.account_info()
-                
-                # Move to main sessions directory
-                final_path = account_manager.sessions_dir / f"{username}.json"
-                shutil.move(file_path, final_path)
-                
-                # Reload accounts
-                account_manager.load_accounts()
-                
-                log(f"✅ Session imported successfully: {username}")
-                return jsonify({
-                    "success": True, 
-                    "message": f"Session imported successfully for {username}",
-                    "username": username
-                })
-                
-            except Exception as e:
-                # Clean up invalid file
-                if file_path.exists():
-                    file_path.unlink()
-                log(f"❌ Invalid session file: {str(e)[:100]}")
-                return jsonify({"success": False, "error": f"Invalid session file: {str(e)[:100]}"})
-        
-        return jsonify({"success": False, "error": "Only JSON files are allowed"})
-        
-    except Exception as e:
-        log(f"💥 Session upload error: {str(e)[:100]}")
-        return jsonify({"success": False, "error": f"Upload failed: {str(e)[:100]}"})
+        messages_per_second = int(payload.get("messages_per_second", 5))
+    except Exception:
+        messages_per_second = 5
 
-# ---------- ULTIMATE UI TEMPLATE ----------
-TEMPLATE = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NovaGram Pro • Multi-Account DM Manager</title>
-    <style>
-        /* Same CSS as your second code - too long to include here */
-        /* Copy the exact same CSS from your second code */
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <div>
-                <div class="logo">NovaGram Pro</div>
-                <div class="credit">Multi-Account DM Manager • Live Hosting Ready</div>
-            </div>
-            <div class="status-badge">
-                <div class="status-dot" id="statusDot"></div>
-                <span id="statusText">Idle</span>
-            </div>
-        </div>
-        
-        <div class="main-layout">
-            <div class="sidebar">
-                <div class="section">
-                    <div class="section-title">🔐 Account Login</div>
-                    
-                    <!-- Instagram Official Login Button -->
-                    <button class="btn btn-primary" onclick="instagramOfficialLogin()" style="margin-bottom: 15px;">
-                        <span>📱 Login with Instagram</span>
-                    </button>
-                    
-                    <div style="text-align: center; margin: 10px 0; color: #666; font-weight: 600;">OR</div>
-                    
-                    <div class="login-form">
-                        <div class="form-group">
-                            <input type="text" class="form-input" id="loginUsername" placeholder="Instagram Username">
-                        </div>
-                        <div class="form-group">
-                            <input type="password" class="form-input" id="loginPassword" placeholder="Instagram Password">
-                        </div>
-                        <div class="form-group" id="verificationCodeGroup" style="display: none;">
-                            <input type="text" class="form-input" id="verificationCode" placeholder="Verification Code">
-                        </div>
-                        <button class="btn btn-secondary" onclick="loginAccount()">
-                            <span>🔑 Manual Login</span>
-                        </button>
-                    </div>
-                </div>
-                
-                <!-- Session Upload Section -->
-                <div style="text-align: center; margin: 15px 0; color: #666; font-weight: 600;">OR</div>
-                
-                <div class="form-group">
-                    <label class="input-label">📁 Import Session File:</label>
-                    <input type="file" id="sessionFileInput" accept=".json" style="display: none;">
-                    <button class="btn btn-secondary" onclick="document.getElementById('sessionFileInput').click()">
-                        <span>📂 Browse Session File</span>
-                    </button>
-                    <div style="font-size: 12px; color: #666; text-align: center; margin-top: 8px;">
-                        Select .json session file
-                    </div>
-                </div>
-                
-                <div class="section">
-                    <div class="section-title">👥 Active Accounts</div>
-                    <div id="accountsList">
-                        <!-- Accounts will be loaded here -->
-                    </div>
-                </div>
-                
-                <div class="section">
-                    <div class="section-title">⚙️ Quick Controls</div>
-                    <button class="btn btn-success" onclick="startSending()" id="startBtn">
-                        <span>🚀 Start Sending</span>
-                    </button>
-                    <button class="btn btn-danger" onclick="stopSending()" id="stopBtn">
-                        <span>🛑 Stop Sending</span>
-                    </button>
-                    <button class="btn btn-secondary" onclick="clearLogs()">
-                        <span>🗑️ Clear Logs</span>
-                    </button>
-                </div>
-            </div>
-            
-            <div class="content-area">
-                <!-- Same content as your second code -->
-                <!-- Copy the exact same HTML structure from your second code -->
-            </div>
-        </div>
-    </div>
+    try:
+        max_per_run = int(payload.get("max_per_run", 100))
+    except Exception:
+        max_per_run = 100
 
-    <script>
-        // Same JavaScript as your second code with Instagram OAuth addition
-        function instagramOfficialLogin() {
-            // Open Instagram OAuth in new window
-            const width = 600;
-            const height = 700;
-            const left = (screen.width - width) / 2;
-            const top = (screen.height - height) / 2;
-            
-            window.open(
-                '/instagram/login',
-                'Instagram Login',
-                `width=${width},height=${height},left=${left},top=${top}`
-            );
-        }
-        
-        // Rest of your JavaScript code from second version
-    </script>
-</body>
-</html>
-'''
+    # Get active accounts data
+    active_accounts = []
+    for username in accounts:
+        account = account_manager.accounts.get(username)
+        if account:
+            active_accounts.append(account)
+            account_manager.activate_account(username)
 
-# ---------- PRODUCTION SERVER COMPATIBLE ----------
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    debug = os.environ.get('DEBUG', 'False').lower() == 'true'
+    if not active_accounts:
+        return jsonify({"ok": False, "message": "No valid accounts selected"})
+
+    STATE["stats"] = {
+        "sent": 0,
+        "failed": 0,
+        "rate": 0,
+        "max_messages": max_per_run
+    }
+
+    WORKER["threads"] = []
+    WORKER["stop_flag"] = False
+    STATE["running"] = True
+    STATE["status"] = "running"
+
+    t = threading.Thread(
+        target=multi_account_sender_worker,
+        args=(active_accounts, thread_ids, messages, messages_per_second, max_per_run),
+        daemon=True
+    )
+    WORKER["threads"].append(t)
+    t.start()
+
+    log(f"🚀 Started multi-account sending with {len(active_accounts)} accounts")
+    log(f"🎯 Target: {max_per_run} messages at {messages_per_second} msg/s")
+    return jsonify({"ok": True, "message": f"Started multi-account sending with {len(active_accounts)} accounts"})
+
+@app.route("/stop", methods=["POST"])
+def stop_sending():
+    WORKER["stop_flag"] = True
+    for t in WORKER["threads"]:
+        t.join(timeout=5)
+    WORKER["threads"] = []
+    STATE["running"] = False
+    STATE["status"] = "idle"
+    STATE["active_workers"] = 0
     
-    if debug:
-        app.run(host='0.0.0.0', port=port, debug=True)
-    else:
-        from waitress import serve
-        print(f"🚀 Starting production server on port {port}...")
-        print(f"📱 Instagram OAuth: {'Enabled' if INSTAGRAM_APP_ID else 'Disabled'}")
-        print(f"🔗 Live Hosting: READY")
-        serve(app, host='0.0.0.0', port=port)
-else:
-    # For Gunicorn and other WSGI servers
-    application = app
+    # Deactivate all accounts
+    for account in account_manager.accounts.values():
+        account['is_active'] = False
+        
+    log("🛑 All sending stopped")
+    return jsonify({"ok": True, "message": "Stopped all sending operations"})
+
+# ---------- Main ----------
+if __name__ == "__main__":
+    print("🚀 NovaGram Pro - Multi-Account Instagram DM Manager")
+    print("📍 http://127.0.0.1:5000")
+    print("👤 Owner: Nova • Telegram: @novaflexed")
+    print("👥 MULTI-ACCOUNT SUPPORT: Multiple accounts simultaneously")
+    print("🔐 AUTO OTP HANDLING: Automatic Instagram verification")
+    print("💬 Smart conversation loading")
+    print("⚡ Speed control: 1-20 messages/second")
+    print("🎯 Custom max messages: 1-10,000")
+    print("🔥 REAL-TIME MULTI-ACCOUNT WORKING")
+    app.run(host='0.0.0.0', port=5000, debug=False)
