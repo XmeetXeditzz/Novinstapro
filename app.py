@@ -57,14 +57,12 @@ state_manager = StateManager()
 
 WORKER = {"threads": [], "stop_flag": False}
 lock = threading.Lock()
-WORKER = {"threads": [], "stop_flag": False}
-lock = threading.Lock()
 
 # ---------- Logging ----------
 def log(msg):
     ts = time.strftime("%H:%M:%S")
     state_manager.add_log(msg)
-    print(f"[{ts}] {msg}")  # Console print bhi
+    print(f"[{ts}] {msg}")
 
 # ---------- Advanced Account Management ----------
 class AdvancedAccountManager:
@@ -72,7 +70,7 @@ class AdvancedAccountManager:
         self.accounts = {}
         self.sessions_dir = Path("sessions")
         self.sessions_dir.mkdir(exist_ok=True)
-        self.pending_verification = {}  # Store pending logins needing OTP
+        self.pending_verification = {}
         self.load_accounts()
     
     def load_accounts(self):
@@ -100,21 +98,16 @@ class AdvancedAccountManager:
         """Login to Instagram account with OTP support"""
         try:
             cl = Client()
-            
-            # Set some headers to avoid detection
             cl.set_user_agent("Instagram 219.0.0.12.117 Android")
             
             if verification_code:
-                # OTP/2FA login
                 log(f"🔄 Attempting login with OTP for {username}")
                 cl.login(username, password, verification_code=verification_code)
                 
-                # Clear pending verification
                 if username in self.pending_verification:
                     del self.pending_verification[username]
                     
             else:
-                # Regular login
                 log(f"🔄 Attempting regular login for {username}")
                 cl.login(username, password)
             
@@ -140,10 +133,8 @@ class AdvancedAccountManager:
             error_msg = str(e)
             log(f"❌ Login error for {username}: {error_msg}")
             
-            # Check for OTP requirement
             if any(keyword in error_msg.lower() for keyword in ["checkpoint", "verification", "challenge", "2fa", "two-factor"]):
                 log(f"🔐 OTP REQUIRED DETECTED for {username}")
-                # Store login credentials for OTP verification
                 self.pending_verification[username] = {
                     'password': password,
                     'client': Client(),
@@ -166,8 +157,6 @@ class AdvancedAccountManager:
             password = pending_data['password']
             
             log(f"🔄 Completing verification for {username} with OTP: {verification_code}")
-            
-            # Complete login with verification code
             cl.login(username, password, verification_code=verification_code)
             
             session_file = self.sessions_dir / f"{username}.json"
@@ -185,9 +174,7 @@ class AdvancedAccountManager:
                 'worker_id': None
             }
             
-            # Clear pending verification
             del self.pending_verification[username]
-            
             log(f"✅ OTP verification successful for {username}")
             return True, None
             
@@ -252,9 +239,10 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
         messages_since_check = 0
         
         # Update max messages in state
-        with lock:
-            STATE["stats"]["max_messages"] = max_per_run
-            STATE["active_workers"] = len(accounts_list)
+        state_manager.update_state({
+            "stats": {"max_messages": max_per_run},
+            "active_workers": len(accounts_list)
+        })
 
         # Create send tasks distributed across accounts
         send_tasks = []
@@ -284,7 +272,6 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
                 future = executor.submit(send_message_multi_worker, account, tid, message)
                 futures.append(future)
                 
-                # Control sending speed
                 if messages_per_second > 0:
                     time.sleep(1.0 / messages_per_second)
 
@@ -294,56 +281,61 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
                     success, username = future.result()
                     
                     with lock:
+                        state = state_manager.get_state()
                         if success:
-                            STATE["stats"]["sent"] += 1
+                            state["stats"]["sent"] += 1
                             messages_since_check += 1
-                            STATE["last_response"] = {
+                            state["last_response"] = {
                                 "account": username,
                                 "timestamp": time.strftime("%H:%M:%S"),
                                 "status": "sent"
                             }
                         else:
-                            STATE["stats"]["failed"] += 1
+                            state["stats"]["failed"] += 1
+                        state_manager.set_state(state)
 
                 except Exception as e:
                     with lock:
-                        STATE["stats"]["failed"] += 1
+                        state = state_manager.get_state()
+                        state["stats"]["failed"] += 1
+                        state_manager.set_state(state)
                     log(f"❌ Future error: {str(e)[:200]}")
 
                 # Update rate every 2 seconds
                 current_time = time.time()
                 if current_time - last_rate_check >= 2.0:
                     actual_rate = (messages_since_check / (current_time - last_rate_check)) if (current_time - last_rate_check) > 0 else 0
-                    with lock:
-                        STATE["stats"]["rate"] = round(actual_rate, 1)
+                    state_manager.update_state({"stats": {"rate": round(actual_rate, 1)}})
                     messages_since_check = 0
                     last_rate_check = current_time
 
                 # Progress updates
-                if STATE["stats"]["sent"] % 10 == 0:
-                    progress = (STATE["stats"]["sent"] / max_per_run) * 100
-                    log(f"📈 Progress: {STATE['stats']['sent']}/{max_per_run} ({progress:.1f}%)")
+                state = state_manager.get_state()
+                if state["stats"]["sent"] % 10 == 0:
+                    progress = (state["stats"]["sent"] / max_per_run) * 100
+                    log(f"📈 Progress: {state['stats']['sent']}/{max_per_run} ({progress:.1f}%)")
 
-                # Check if we've reached max messages
-                if STATE["stats"]["sent"] >= max_per_run:
+                if state["stats"]["sent"] >= max_per_run:
                     log(f"🎯 Reached maximum messages limit: {max_per_run}")
                     break
 
         # Final stats
         total_time = time.time() - start_time
-        final_rate = STATE["stats"]["sent"] / total_time if total_time > 0 else 0
+        state = state_manager.get_state()
+        final_rate = state["stats"]["sent"] / total_time if total_time > 0 else 0
 
-        log(f"✅ Multi-account worker completed: {STATE['stats']['sent']} messages sent")
+        log(f"✅ Multi-account worker completed: {state['stats']['sent']} messages sent")
         log(f"⚡ Final rate: {final_rate:.1f} messages/second")
         log(f"👥 Active accounts used: {len(accounts_list)}")
 
     except Exception as e:
         log(f"💥 Multi-account worker error: {str(e)[:200]}")
     finally:
-        with lock:
-            STATE["running"] = False
-            STATE["status"] = "idle"
-            STATE["active_workers"] = 0
+        state_manager.update_state({
+            "running": False,
+            "status": "idle",
+            "active_workers": 0
+        })
         WORKER["stop_flag"] = False
         # Deactivate all accounts
         for account in accounts_list:
@@ -1956,15 +1948,6 @@ def load_chats_for_account(username):
     except Exception as e:
         log(f"❌ Failed to load chats: {str(e)[:200]}")
         return False, str(e)[:200]
-        
-        STATE["threads"] = threads
-        STATE["current_account"] = username
-        log(f"✅ Loaded {len(threads)} chats for {username}")
-        return True, f"Loaded {len(threads)} conversations"
-        
-    except Exception as e:
-        log(f"❌ Failed to load chats: {str(e)[:200]}")
-        return False, str(e)[:200]
 
 # ---------- Routes ----------
 @app.route("/")
@@ -2046,7 +2029,8 @@ def load_chats():
 
 @app.route("/start_multi", methods=["POST"])
 def start_multi_sending():
-    if STATE["running"]:
+    state = state_manager.get_state()
+    if state["running"]:
         return jsonify({"ok": False, "message": "Already running"})
 
     payload = request.get_json(force=True)
@@ -2084,17 +2068,19 @@ def start_multi_sending():
     if not active_accounts:
         return jsonify({"ok": False, "message": "No valid accounts selected"})
 
-    STATE["stats"] = {
-        "sent": 0,
-        "failed": 0,
-        "rate": 0,
-        "max_messages": max_per_run
-    }
+    state_manager.update_state({
+        "running": True,
+        "status": "running",
+        "stats": {
+            "sent": 0,
+            "failed": 0,
+            "rate": 0,
+            "max_messages": max_per_run
+        }
+    })
 
     WORKER["threads"] = []
     WORKER["stop_flag"] = False
-    STATE["running"] = True
-    STATE["status"] = "running"
 
     t = threading.Thread(
         target=multi_account_sender_worker,
@@ -2147,6 +2133,6 @@ if __name__ == "__main__":
         host='0.0.0.0', 
         port=port, 
         debug=False,
-        threaded=False,    # ❌ Threading band
-        processes=1        # ✅ Single process
+        threaded=False,
+        processes=1
     )
