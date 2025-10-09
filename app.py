@@ -2089,4 +2089,13 @@ if __name__ == "__main__":
     print("🎯 Custom max messages: 1-10,000")
     print("🔥 REAL-TIME MULTI-ACCOUNT WORKING")
     print("\n🔧 DEBUG MODE: OTP detection enabled")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    
+    # Railway Quick Fix - Single Worker Mode
+    port = int(os.environ.get("PORT", 5000))
+    app.run(
+        host='0.0.0.0', 
+        port=port, 
+        debug=False,
+        threaded=False,    # ❌ Threading band
+        processes=1        # ✅ Single process
+    )
