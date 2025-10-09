@@ -8,14 +8,6 @@ import hashlib
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
-# Session configuration for Railway
-app.config.update(
-    SESSION_COOKIE_SECURE=True,
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='Lax',
-    PERMANENT_SESSION_LIFETIME=1800  # 30 minutes
-)
-
 # ---------- Persistent State Management ----------
 class StateManager:
     def __init__(self):
@@ -79,73 +71,28 @@ class AdvancedAccountManager:
         self.sessions_dir = Path("sessions")
         self.sessions_dir.mkdir(exist_ok=True)
         self.pending_verification = {}
-        self.accounts_file = Path("accounts.json")  # ✅ Added accounts persistence
         self.load_accounts()
     
-    def save_accounts(self):
-        """Save accounts to persistent file"""
-        accounts_data = {}
-        for username, acc in self.accounts.items():
-            accounts_data[username] = {
-                'username': acc['username'],
-                'full_name': acc['full_name'],
-                'status': acc['status'],
-                'is_active': acc['is_active'],
-                'session_file': str(acc['session_file'])
-            }
-        self.accounts_file.write_text(json.dumps(accounts_data, indent=2))
-    
     def load_accounts(self):
-        """Load accounts from persistent file"""
-        # Load from accounts.json if exists
-        if self.accounts_file.exists():
-            try:
-                accounts_data = json.loads(self.accounts_file.read_text())
-                for username, acc_data in accounts_data.items():
-                    session_file = Path(acc_data['session_file'])
-                    if session_file.exists():
-                        try:
-                            cl = Client()
-                            cl.load_settings(str(session_file))
-                            user_info = cl.account_info()
-                            self.accounts[username] = {
-                                'client': cl,
-                                'username': username,
-                                'full_name': user_info.full_name,
-                                'status': 'online',
-                                'session_file': session_file,
-                                'is_active': acc_data.get('is_active', False),
-                                'worker_id': None
-                            }
-                            log(f"✅ Loaded account: {username}")
-                        except Exception as e:
-                            log(f"❌ Failed to load {username}: {str(e)[:200]}")
-            except Exception as e:
-                log(f"❌ Error loading accounts file: {e}")
-        
-        # Also load from session files as backup
+        """Load all saved accounts from session files"""
         for session_file in self.sessions_dir.glob("*.json"):
             username = session_file.stem
-            if username not in self.accounts:
-                try:
-                    cl = Client()
-                    cl.load_settings(str(session_file))
-                    user_info = cl.account_info()
-                    self.accounts[username] = {
-                        'client': cl,
-                        'username': username,
-                        'full_name': user_info.full_name,
-                        'status': 'online',
-                        'session_file': session_file,
-                        'is_active': False,
-                        'worker_id': None
-                    }
-                    log(f"✅ Loaded account from session: {username}")
-                except Exception as e:
-                    log(f"❌ Failed to load {username}: {str(e)[:200]}")
-        
-        # Save the final state
-        self.save_accounts()
+            try:
+                cl = Client()
+                cl.load_settings(str(session_file))
+                user_info = cl.account_info()
+                self.accounts[username] = {
+                    'client': cl,
+                    'username': username,
+                    'full_name': user_info.full_name,
+                    'status': 'online',
+                    'session_file': session_file,
+                    'is_active': False,
+                    'worker_id': None
+                }
+                log(f"✅ Loaded account: {username}")
+            except Exception as e:
+                log(f"❌ Failed to load {username}: {str(e)[:200]}")
     
     def login_account(self, username, password, verification_code=None):
         """Login to Instagram account with OTP support"""
@@ -178,9 +125,6 @@ class AdvancedAccountManager:
                 'is_active': False,
                 'worker_id': None
             }
-            
-            # ✅ Save to persistent file
-            self.save_accounts()
             
             log(f"✅ Successfully logged in: {username}")
             return True, None
@@ -231,10 +175,6 @@ class AdvancedAccountManager:
             }
             
             del self.pending_verification[username]
-            
-            # ✅ Save to persistent file
-            self.save_accounts()
-            
             log(f"✅ OTP verification successful for {username}")
             return True, None
             
@@ -265,7 +205,6 @@ class AdvancedAccountManager:
         """Mark account as active for sending"""
         if username in self.accounts:
             self.accounts[username]['is_active'] = True
-            self.save_accounts()  # ✅ Save state
             return True
         return False
     
@@ -273,7 +212,6 @@ class AdvancedAccountManager:
         """Mark account as inactive"""
         if username in self.accounts:
             self.accounts[username]['is_active'] = False
-            self.save_accounts()  # ✅ Save state
             return True
         return False
     
@@ -404,19 +342,1578 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
             account_manager.deactivate_account(account['username'])
 
 # ---------- ULTIMATE UI ----------
-# [SAME TEMPLATE AS BEFORE - TOO LONG TO REPEAT]
-# Copy the exact same TEMPLATE variable from your previous code
-
 TEMPLATE = r'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NovaGram Pro • Multi-Account DM Manager</title>
-    <!-- COPY THE EXACT SAME STYLES AND HTML FROM YOUR PREVIOUS CODE -->
+    <style>
+        :root {
+            --primary: #667eea;
+            --primary-dark: #5a67d8;
+            --secondary: #764ba2;
+            --success: #51cf66;
+            --danger: #ff6b6b;
+            --warning: #ffd43b;
+            --dark: #2d3748;
+            --light: #f8f9fa;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 25px;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .logo {
+            font-size: 32px;
+            font-weight: 800;
+            background: linear-gradient(45deg, #405de6, #5851db, #833ab4, #c13584, #e1306c, #fd1d1d);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .credit {
+            font-size: 14px;
+            color: #666;
+            text-align: right;
+            font-weight: 500;
+        }
+        
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 20px;
+            background: white;
+            border-radius: 25px;
+            border: 2px solid #e9ecef;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #8e8e8e;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .status-running { background: var(--success); }
+        .status-error { background: var(--danger); }
+        .status-warning { background: var(--warning); }
+        
+        .main-layout {
+            display: grid;
+            grid-template-columns: 400px 1fr;
+            gap: 30px;
+            min-height: 700px;
+        }
+        
+        .sidebar {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .section {
+            margin-bottom: 35px;
+        }
+        
+        .section-title {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 25px;
+            color: var(--dark);
+            border-bottom: 3px solid var(--light);
+            padding-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .section-title::before {
+            content: '';
+            width: 4px;
+            height: 20px;
+            background: var(--primary);
+            border-radius: 2px;
+        }
+        
+        .account-card {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 20px;
+            border-radius: 15px;
+            cursor: pointer;
+            margin-bottom: 12px;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+            background: var(--light);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .account-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+            transition: left 0.5s;
+        }
+        
+        .account-card:hover::before {
+            left: 100%;
+        }
+        
+        .account-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.15);
+        }
+        
+        .account-card.active {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            color: white;
+            border-color: var(--primary-dark);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+        }
+        
+        .account-avatar {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: linear-gradient(45deg, #405de6, #5851db, #833ab4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 20px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .account-info {
+            flex: 1;
+        }
+        
+        .account-name {
+            font-weight: 700;
+            font-size: 16px;
+            margin-bottom: 4px;
+        }
+        
+        .account-status {
+            font-size: 13px;
+            opacity: 0.8;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #8e8e8e;
+        }
+        
+        .status-online { background: var(--success); }
+        .status-offline { background: var(--danger); }
+        .status-working { background: var(--warning); }
+        
+        .account-select {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            background: white;
+            transition: all 0.3s ease;
+        }
+        
+        .account-card.active .account-select {
+            background: var(--primary-dark);
+            border-color: var(--primary-dark);
+        }
+        
+        .account-card.active .account-select::after {
+            content: '✓';
+            color: white;
+            font-size: 12px;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+        
+        .chat-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 18px;
+            border-radius: 15px;
+            cursor: pointer;
+            margin-bottom: 10px;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+            background: var(--light);
+        }
+        
+        .chat-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .chat-item.selected {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            color: white;
+            border-color: var(--primary-dark);
+        }
+        
+        .chat-avatar {
+            width: 45px;
+            height: 45px;
+            border-radius: 50%;
+            background: var(--dark);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 16px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .chat-name {
+            font-weight: 600;
+            font-size: 15px;
+        }
+        
+        .btn {
+            padding: 16px 28px;
+            border: none;
+            border-radius: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            width: 100%;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transition: left 0.5s;
+        }
+        
+        .btn:hover::before {
+            left: 100%;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-danger {
+            background: linear-gradient(135deg, var(--danger) 0%, #ee5a24 100%);
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(255, 107, 107, 0.4);
+        }
+        
+        .btn-secondary {
+            background: white;
+            color: var(--dark);
+            border: 2px solid #e9ecef;
+        }
+        
+        .btn-secondary:hover {
+            background: var(--light);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .btn-success {
+            background: linear-gradient(135deg, var(--success) 0%, #40c057 100%);
+            color: white;
+        }
+        
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(81, 207, 102, 0.4);
+        }
+        
+        .main-content {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 35px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .login-section {
+            text-align: center;
+            padding: 60px 40px;
+        }
+        
+        .login-title {
+            font-size: 36px;
+            font-weight: 800;
+            margin-bottom: 50px;
+            background: linear-gradient(45deg, #405de6, #5851db, #833ab4);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .login-form {
+            max-width: 450px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .form-group {
+            text-align: left;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: var(--dark);
+        }
+        
+        .form-input {
+            padding: 18px 25px;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            font-size: 16px;
+            background: white;
+            transition: all 0.3s ease;
+            width: 100%;
+        }
+        
+        .form-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            transform: translateY(-1px);
+        }
+        
+        .control-section {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 25px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            padding: 30px;
+            border-radius: 20px;
+            text-align: center;
+            color: white;
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.1), transparent);
+            transform: rotate(45deg);
+            animation: shine 3s infinite;
+        }
+        
+        @keyframes shine {
+            0% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+            100% { transform: translateX(100%) translateY(100%) rotate(45deg); }
+        }
+        
+        .stat-number {
+            font-size: 42px;
+            font-weight: 800;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+        }
+        
+        .stat-label {
+            font-size: 14px;
+            opacity: 0.9;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            font-weight: 600;
+        }
+        
+        .control-panel {
+            background: var(--light);
+            padding: 30px;
+            border-radius: 20px;
+            margin: 20px 0;
+        }
+        
+        .control-group {
+            margin-bottom: 25px;
+        }
+        
+        .control-label {
+            display: block;
+            margin-bottom: 12px;
+            font-weight: 700;
+            color: var(--dark);
+            font-size: 16px;
+        }
+        
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 25px;
+            margin-top: 15px;
+        }
+        
+        .slider {
+            flex: 1;
+            height: 8px;
+            background: #e9ecef;
+            border-radius: 4px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 24px;
+            height: 24px;
+            background: var(--primary);
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+            border: 3px solid white;
+        }
+        
+        .value-display {
+            min-width: 70px;
+            text-align: center;
+            font-weight: 800;
+            font-size: 20px;
+            color: var(--primary);
+            background: white;
+            padding: 8px 15px;
+            border-radius: 10px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .message-inputs {
+            margin: 25px 0;
+        }
+        
+        .message-input-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .message-input {
+            flex: 1;
+            padding: 18px 25px;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            font-size: 16px;
+            background: white;
+            transition: all 0.3s ease;
+        }
+        
+        .message-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .remove-message-btn {
+            background: var(--danger);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            cursor: pointer;
+            font-size: 20px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            transition: all 0.3s ease;
+        }
+        
+        .remove-message-btn:hover {
+            background: #ee5a24;
+            transform: scale(1.1) rotate(90deg);
+        }
+        
+        .add-message-btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            cursor: pointer;
+            font-size: 24px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 20px auto;
+            transition: all 0.3s ease;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+        }
+        
+        .add-message-btn:hover {
+            background: var(--primary-dark);
+            transform: scale(1.1) rotate(90deg);
+        }
+        
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin: 25px 0;
+            padding: 20px;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 3px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .progress-container {
+            margin: 25px 0;
+        }
+        
+        .progress-header {
+            display: flex;
+            justify-content: between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 12px;
+            background: #e9ecef;
+            border-radius: 6px;
+            overflow: hidden;
+            margin: 15px 0;
+            box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            transition: width 0.5s ease;
+            border-radius: 6px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .progress-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+            animation: progressShine 2s infinite;
+        }
+        
+        @keyframes progressShine {
+            0% { left: -100%; }
+            100% { left: 100%; }
+        }
+        
+        .action-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 30px 0;
+        }
+        
+        .logs-panel {
+            background: #1a1a1a;
+            border: 2px solid #333;
+            border-radius: 15px;
+            padding: 25px;
+            height: 250px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 14px;
+            margin-top: 30px;
+            color: #00ff00;
+            box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.5);
+        }
+        
+        .log-entry {
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .log-time {
+            color: #888;
+            margin-right: 10px;
+            min-width: 70px;
+        }
+        
+        .hidden {
+            display: none !important;
+        }
+        
+        .multi-account-info {
+            background: linear-gradient(135deg, var(--warning) 0%, #fcc419 100%);
+            color: var(--dark);
+            padding: 20px;
+            border-radius: 15px;
+            margin: 20px 0;
+            text-align: center;
+            font-weight: 600;
+        }
+        
+        .accounts-counter {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            font-size: 18px;
+            margin-top: 10px;
+        }
+        
+        /* Instagram-like OTP Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(5px);
+        }
+        
+        .otp-modal {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 450px;
+            width: 90%;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            animation: modalSlideIn 0.3s ease-out;
+        }
+        
+        @keyframes modalSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-50px) scale(0.9);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+        
+        .otp-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+        
+        .otp-title {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 15px;
+            color: var(--dark);
+        }
+        
+        .otp-subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            line-height: 1.5;
+        }
+        
+        .otp-input-group {
+            margin: 30px 0;
+        }
+        
+        .otp-input {
+            width: 100%;
+            padding: 20px;
+            font-size: 18px;
+            text-align: center;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            background: #f8f9fa;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            letter-spacing: 2px;
+        }
+        
+        .otp-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            background: white;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            transform: translateY(-2px);
+        }
+        
+        .otp-actions {
+            display: flex;
+            gap: 15px;
+            margin-top: 25px;
+        }
+        
+        .otp-btn {
+            flex: 1;
+            padding: 16px;
+            border: none;
+            border-radius: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .otp-btn-primary {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            color: white;
+        }
+        
+        .otp-btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+        }
+        
+        .otp-btn-secondary {
+            background: #f8f9fa;
+            color: var(--dark);
+            border: 2px solid #e9ecef;
+        }
+        
+        .otp-btn-secondary:hover {
+            background: white;
+            transform: translateY(-2px);
+        }
+        
+        .security-notice {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 20px 0;
+            text-align: left;
+            font-size: 14px;
+            color: #856404;
+        }
+        
+        .security-notice strong {
+            display: block;
+            margin-bottom: 5px;
+        }
+    </style>
+    <style>
+        /* Mobile responsive styles */
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+                max-width: 100%;
+            }
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 15px;
+                padding: 20px;
+            }
+            .main-layout {
+                display: block;
+                min-height: auto;
+            }
+            .sidebar {
+                width: 100%;
+                border-radius: 15px;
+                padding: 25px;
+                margin-bottom: 20px;
+            }
+            .main-content {
+                width: 100%;
+                border-radius: 15px;
+                padding: 25px;
+            }
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 15px;
+            }
+            .account-card, .chat-item {
+                padding: 15px;
+                font-size: 14px;
+            }
+            .btn {
+                font-size: 16px;
+                padding: 18px 20px;
+            }
+            .form-input, .message-input {
+                font-size: 16px;
+                padding: 16px;
+            }
+            .message-box {
+                font-size: 16px;
+                min-height: 150px;
+            }
+            .stat-number {
+                font-size: 32px;
+            }
+            .stat-label {
+                font-size: 12px;
+            }
+            .slider-container {
+                gap: 15px;
+            }
+            .value-display {
+                font-size: 18px;
+                min-width: 60px;
+            }
+            .logs-panel {
+                height: 200px;
+                font-size: 12px;
+            }
+            .action-buttons {
+                grid-template-columns: 1fr;
+                gap: 15px;
+            }
+            .otp-modal {
+                padding: 30px 25px;
+                margin: 20px;
+            }
+            .otp-actions {
+                flex-direction: column;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            .login-section {
+                padding: 40px 20px;
+            }
+            .login-title {
+                font-size: 28px;
+            }
+        }
+    </style>
 </head>
 <body>
-    <!-- COPY THE EXACT SAME HTML FROM YOUR PREVIOUS CODE -->
+    <div class="container">
+        <div class="header">
+            <div>
+                <div class="logo">NovaGram Pro</div>
+                <div class="credit">Multi-Account DM Manager • By Nova (@novaflexed)</div>
+            </div>
+            <div class="status-badge">
+                <div class="status-dot" id="status_dot"></div>
+                <span id="status_text">Ready</span>
+                <span id="active_workers">• 0 Workers</span>
+            </div>
+        </div>
+        
+        <div class="main-layout">
+            <!-- Sidebar -->
+            <div class="sidebar">
+                <div class="section">
+                    <div class="section-title">👥 Accounts Manager</div>
+                    <div id="accounts_list">
+                        <!-- Accounts will be loaded here -->
+                    </div>
+                    <button class="btn btn-secondary" onclick="showLogin()">
+                        <span>➕</span> Add New Account
+                    </button>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">💬 Conversations</div>
+                    <div id="chats_list">
+                        <!-- Chats will be loaded here -->
+                    </div>
+                    <button class="btn btn-secondary" onclick="loadChats()" id="refresh_chats_btn">
+                        <span>🔄</span> Refresh Chats
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Main Content -->
+            <div class="main-content">
+                <!-- Login Section -->
+                <div id="login_section" class="login-section">
+                    <div class="login-title">Add Instagram Account</div>
+                    
+                    <div class="login-form">
+                        <div class="form-group">
+                            <label class="form-label">Username</label>
+                            <input type="text" id="username" class="form-input" placeholder="Enter Instagram username" autocomplete="username">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label">Password</label>
+                            <input type="password" id="password" class="form-input" placeholder="Enter password" autocomplete="current-password">
+                        </div>
+                        
+                        <button class="btn btn-primary" onclick="loginAccount()" id="login_btn">
+                            <span>🚀</span> Login to Instagram
+                        </button>
+                        <div id="login_status" style="font-size: 14px; margin-top: 20px; padding: 15px; border-radius: 10px; display: none;"></div>
+                    </div>
+                </div>
+                
+                <!-- Control Section -->
+                <div id="control_section" class="control-section hidden">
+                    <!-- Multi-Account Info -->
+                    <div class="multi-account-info" id="multi_account_info" style="display: none;">
+                        <div>🎯 Multi-Account Mode Active</div>
+                        <div class="accounts-counter">
+                            <span id="active_accounts_count">0</span> accounts selected for sending
+                        </div>
+                    </div>
+                    
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-number" id="sent_count">0</div>
+                            <div class="stat-label">Messages Sent</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-number" id="failed_count">0</div>
+                            <div class="stat-label">Failed</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-number" id="rate_display">0</div>
+                            <div class="stat-label">Per Second</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-number" id="max_messages_display">100</div>
+                            <div class="stat-label">Max Messages</div>
+                        </div>
+                    </div>
+                    
+                    <div class="control-panel">
+                        <div class="control-group">
+                            <label class="control-label">⚡ Messages Per Second</label>
+                            <div class="slider-container">
+                                <input type="range" min="1" max="20" value="5" class="slider" id="speed_slider">
+                                <div class="value-display" id="speed_value">5/s</div>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <label class="control-label">🎯 Maximum Messages to Send</label>
+                            <input type="number" min="1" max="10000" value="100" class="form-input" id="max_messages_input">
+                        </div>
+                    </div>
+                    
+                    <div class="message-inputs">
+                        <label class="control-label">💌 Messages (Randomly Selected)</label>
+                        <div id="message_inputs">
+                            <div class="message-input-container">
+                                <input type="text" class="message-input" placeholder="Enter message" value="Hello! 👋">
+                                <button class="remove-message-btn" onclick="removeMessage(this)">-</button>
+                            </div>
+                            <div class="message-input-container">
+                                <input type="text" class="message-input" placeholder="Enter message" value="This is NovaGram Pro Multi-Account DM Manager! 🚀">
+                                <button class="remove-message-btn" onclick="removeMessage(this)">-</button>
+                            </div>
+                            <div class="message-input-container">
+                                <input type="text" class="message-input" placeholder="Enter message" value="Hope you're having an amazing day! ✨">
+                                <button class="remove-message-btn" onclick="removeMessage(this)">-</button>
+                            </div>
+                        </div>
+                        <button class="add-message-btn" onclick="addMessage()">+</button>
+                    </div>
+                    
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="opt_in_confirm">
+                        <label for="opt_in_confirm">✅ I confirm recipients have opted in to receive messages</label>
+                    </div>
+                    
+                    <div class="progress-container">
+                        <div class="progress-header">
+                            <span>📊 Progress</span>
+                            <span id="progress_text">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progress_fill" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="action-buttons">
+                        <button class="btn btn-success" onclick="startSending()" id="start_btn">
+                            <span>🚀</span> Start Multi-Account Sending
+                        </button>
+                        <button class="btn btn-danger" onclick="stopSending()" id="stop_btn">
+                            <span>⏹️</span> Stop All Workers
+                        </button>
+                    </div>
+                    
+                    <div class="logs-panel" id="logs_container">
+                        <!-- Logs will be loaded here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- OTP Verification Modal -->
+    <div id="otp_modal" class="modal-overlay hidden">
+        <div class="otp-modal">
+            <div class="otp-icon">🔐</div>
+            <div class="otp-title">Security Check Required</div>
+            <div class="otp-subtitle">
+                For your security, Instagram needs to verify it's you. 
+                Please enter the 6-digit code sent to your email or phone.
+            </div>
+            
+            <div class="security-notice">
+                <strong>🔒 Security Notice</strong>
+                This verification helps keep your account secure. The code will expire shortly.
+            </div>
+            
+            <div class="otp-input-group">
+                <input type="text" id="otp_code" class="otp-input" placeholder="Enter 6-digit code" maxlength="6" 
+                       pattern="[0-9]{6}" inputmode="numeric" autocomplete="one-time-code">
+            </div>
+            
+            <div class="otp-actions">
+                <button class="otp-btn otp-btn-secondary" onclick="cancelVerification()">
+                    Cancel
+                </button>
+                <button class="otp-btn otp-btn-primary" onclick="submitVerification()">
+                    Verify & Continue
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentAccount = null;
+        let selectedChats = new Set();
+        let selectedAccounts = new Set();
+        let showingLogin = false;
+        let pendingUsername = null;
+        
+        // Initialize speed slider
+        const speedSlider = document.getElementById('speed_slider');
+        const speedValue = document.getElementById('speed_value');
+        speedSlider.addEventListener('input', function() {
+            speedValue.textContent = this.value + '/s';
+        });
+
+        // Initialize max messages input
+        const maxMessagesInput = document.getElementById('max_messages_input');
+        maxMessagesInput.addEventListener('input', function() {
+            document.getElementById('max_messages_display').textContent = this.value;
+        });
+
+        // OTP input formatting
+        const otpInput = document.getElementById('otp_code');
+        otpInput.addEventListener('input', function(e) {
+            // Only allow numbers
+            this.value = this.value.replace(/[^0-9]/g, '');
+            
+            // Auto-submit when 6 digits entered
+            if (this.value.length === 6) {
+                submitVerification();
+            }
+        });
+        
+        function updateUI(state) {
+            // Update status
+            document.getElementById('status_text').textContent = state.status;
+            document.getElementById('status_dot').className = 'status-dot status-' + state.status;
+            document.getElementById('active_workers').textContent = `• ${state.active_workers || 0} Workers`;
+            
+            // Update stats
+            document.getElementById('sent_count').textContent = state.stats.sent;
+            document.getElementById('failed_count').textContent = state.stats.failed;
+            document.getElementById('rate_display').textContent = state.stats.rate;
+            document.getElementById('max_messages_display').textContent = state.stats.max_messages || 100;
+            
+            // Update progress
+            const maxMessages = state.stats.max_messages || 100;
+            const progress = Math.min(100, (state.stats.sent / maxMessages) * 100);
+            document.getElementById('progress_fill').style.width = progress + '%';
+            document.getElementById('progress_text').textContent = Math.round(progress) + '%';
+            
+            // Update accounts
+            updateAccountsList(state.accounts || []);
+            
+            // Update chats
+            updateChatsList(state.threads || []);
+            
+            // Update multi-account info
+            updateMultiAccountInfo();
+            
+            // Update logs
+            const logsContainer = document.getElementById('logs_container');
+            logsContainer.innerHTML = state.logs.map(log => {
+                const parts = log.split(']');
+                const time = parts[0] + ']';
+                const message = parts.slice(1).join(']');
+                return `<div class="log-entry"><span class="log-time">${time}</span>${message}</div>`;
+            }).join('');
+            logsContainer.scrollTop = logsContainer.scrollHeight;
+            
+            // Show/hide sections
+            if (state.accounts && state.accounts.length > 0 && !showingLogin) {
+                document.getElementById('login_section').classList.add('hidden');
+                document.getElementById('control_section').classList.remove('hidden');
+                document.getElementById('refresh_chats_btn').classList.remove('hidden');
+            } else {
+                document.getElementById('login_section').classList.remove('hidden');
+                document.getElementById('control_section').classList.add('hidden');
+                document.getElementById('refresh_chats_btn').classList.add('hidden');
+            }
+        }
+        
+        function updateAccountsList(accounts) {
+            const container = document.getElementById('accounts_list');
+            container.innerHTML = '';
+            
+            accounts.forEach(account => {
+                const div = document.createElement('div');
+                div.className = `account-card ${selectedAccounts.has(account.username) ? 'active' : ''}`;
+                div.onclick = () => toggleAccountSelection(account.username);
+                
+                div.innerHTML = `
+                    <div class="account-avatar">${account.username.charAt(0).toUpperCase()}</div>
+                    <div class="account-info">
+                        <div class="account-name">${account.username}</div>
+                        <div class="account-status">
+                            <div class="status-indicator status-${account.status}"></div>
+                            ${account.status} ${account.is_active ? '• 🟢 Active' : '🔴 Inactive'}
+                        </div>
+                    </div>
+                    <div class="account-select"></div>
+                `;
+                
+                container.appendChild(div);
+            });
+        }
+        
+        function updateChatsList(threads) {
+            const container = document.getElementById('chats_list');
+            container.innerHTML = '';
+            
+            threads.forEach(thread => {
+                const div = document.createElement('div');
+                div.className = `chat-item ${selectedChats.has(thread.id) ? 'selected' : ''}`;
+                div.onclick = () => toggleChat(thread.id);
+                
+                div.innerHTML = `
+                    <div class="chat-avatar">${thread.name.charAt(0).toUpperCase()}</div>
+                    <div class="chat-name">${thread.name}</div>
+                `;
+                
+                container.appendChild(div);
+            });
+        }
+        
+        function updateMultiAccountInfo() {
+            const infoDiv = document.getElementById('multi_account_info');
+            const countSpan = document.getElementById('active_accounts_count');
+            
+            if (selectedAccounts.size > 0) {
+                infoDiv.style.display = 'block';
+                countSpan.textContent = selectedAccounts.size;
+            } else {
+                infoDiv.style.display = 'none';
+            }
+        }
+        
+        function toggleAccountSelection(username) {
+            if (selectedAccounts.has(username)) {
+                selectedAccounts.delete(username);
+            } else {
+                selectedAccounts.add(username);
+            }
+            updateMultiAccountInfo();
+            fetchState();
+        }
+        
+        function toggleChat(chatId) {
+            if (selectedChats.has(chatId)) {
+                selectedChats.delete(chatId);
+            } else {
+                selectedChats.add(chatId);
+            }
+            fetchState();
+        }
+
+        function switchAccount(username) {
+            currentAccount = username;
+            fetch('/switch_account', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({username: username})
+            }).then(() => {
+                loadChats();
+                fetchState();
+            });
+        }
+        
+        function showLogin() {
+            document.getElementById('username').value = '';
+            document.getElementById('password').value = '';
+            document.getElementById('login_status').style.display = 'none';
+            document.getElementById('login_section').classList.remove('hidden');
+            document.getElementById('control_section').classList.add('hidden');
+            showingLogin = true;
+        }
+        
+        function loginAccount() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            
+            if (!username || !password) {
+                showLoginStatus('Please enter username and password', 'error');
+                return;
+            }
+            
+            const btn = document.getElementById('login_btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span>⏳</span> Logging in...';
+            
+            fetch('/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    username: username,
+                    password: password
+                })
+            })
+            .then(r => r.json())
+            .then(result => {
+                console.log('Login response:', result);
+                if (result.ok) {
+                    if (result.requires_verification) {
+                        // Show OTP modal
+                        pendingUsername = username;
+                        showOtpModal();
+                        showLoginStatus('🔐 Security verification required', 'warning');
+                    } else {
+                        currentAccount = username;
+                        showingLogin = false;
+                        showLoginStatus('✅ Login successful!', 'success');
+                        setTimeout(() => {
+                            fetchState();
+                        }, 1500);
+                    }
+                } else {
+                    showLoginStatus('❌ ' + result.message, 'error');
+                }
+            })
+            .catch(err => {
+                console.error('Login error:', err);
+                showLoginStatus('❌ Network error: ' + err.message, 'error');
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = '<span>🚀</span> Login to Instagram';
+            });
+        }
+        
+        function showOtpModal() {
+            console.log('Showing OTP modal for:', pendingUsername);
+            const modal = document.getElementById('otp_modal');
+            modal.classList.remove('hidden');
+            document.getElementById('otp_code').value = '';
+            document.getElementById('otp_code').focus();
+        }
+        
+        function hideOtpModal() {
+            const modal = document.getElementById('otp_modal');
+            modal.classList.add('hidden');
+        }
+        
+        function submitVerification() {
+            const verificationCode = document.getElementById('otp_code').value;
+            
+            if (!verificationCode || verificationCode.length !== 6) {
+                alert('Please enter a valid 6-digit code');
+                return;
+            }
+            
+            if (!pendingUsername) {
+                alert('No pending verification found');
+                return;
+            }
+            
+            console.log('Submitting OTP for:', pendingUsername, 'Code:', verificationCode);
+            
+            fetch('/verify_otp', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    username: pendingUsername,
+                    verification_code: verificationCode
+                })
+            })
+            .then(r => r.json())
+            .then(result => {
+                console.log('OTP verification response:', result);
+                if (result.ok) {
+                    hideOtpModal();
+                    currentAccount = pendingUsername;
+                    showingLogin = false;
+                    showLoginStatus('✅ Verification successful! Account added.', 'success');
+                    pendingUsername = null;
+                    setTimeout(() => {
+                        fetchState();
+                    }, 1500);
+                } else {
+                    showLoginStatus('❌ ' + result.message, 'error');
+                    document.getElementById('otp_code').value = '';
+                    document.getElementById('otp_code').focus();
+                }
+            })
+            .catch(err => {
+                console.error('OTP verification error:', err);
+                showLoginStatus('❌ Network error: ' + err.message, 'error');
+            });
+        }
+        
+        function cancelVerification() {
+            hideOtpModal();
+            pendingUsername = null;
+            showLoginStatus('Verification cancelled', 'warning');
+        }
+        
+        function showLoginStatus(message, type) {
+            const statusDiv = document.getElementById('login_status');
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+            statusDiv.style.background = type === 'error' ? '#ff6b6b' : 
+                                       type === 'warning' ? '#ffd43b' : '#51cf66';
+            statusDiv.style.color = type === 'warning' ? '#333' : 'white';
+        }
+        
+        function loadChats() {
+            if (!currentAccount && selectedAccounts.size === 0) {
+                alert('Please select at least one account');
+                return;
+            }
+            
+            const accountToUse = currentAccount || Array.from(selectedAccounts)[0];
+            
+            fetch('/load_chats', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({username: accountToUse})
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (!result.ok) {
+                    alert('Error: ' + result.message);
+                }
+                fetchState();
+            });
+        }
+        
+        function startSending() {
+            if (selectedChats.size === 0) {
+                alert('Please select at least one conversation');
+                return;
+            }
+            
+            if (selectedAccounts.size === 0) {
+                alert('Please select at least one account');
+                return;
+            }
+            
+            // Collect messages
+            const messageInputs = document.querySelectorAll('.message-input');
+            const messagesArray = [];
+            messageInputs.forEach(input => {
+                if (input.value.trim()) {
+                    messagesArray.push(input.value.trim());
+                }
+            });
+            if (messagesArray.length === 0) {
+                alert('Please enter messages');
+                return;
+            }
+            
+            if (!document.getElementById('opt_in_confirm').checked) {
+                alert('Please confirm opt-in');
+                return;
+            }
+            
+            const payload = {
+                accounts: Array.from(selectedAccounts),
+                thread_ids: Array.from(selectedChats),
+                messages: messagesArray,
+                messages_per_second: parseInt(speedSlider.value),
+                max_per_run: parseInt(maxMessagesInput.value) || 100
+            };
+            
+            fetch('/start_multi', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.ok) {
+                    alert('🚀 Multi-account sending started with ' + selectedAccounts.size + ' accounts!');
+                } else {
+                    alert('Error: ' + result.message);
+                }
+                fetchState();
+            })
+            .catch(err => {
+                console.error('Start sending error:', err);
+                alert('Failed to start sending messages.');
+            });
+        }
+        
+        function stopSending() {
+            fetch('/stop', {method: 'POST'})
+            .then(r => r.json())
+            .then(result => {
+                alert(result.message);
+                fetchState();
+            })
+            .catch(err => {
+                console.error('Stop sending error:', err);
+                alert('Failed to stop sending messages.');
+            });
+        }
+        
+        function fetchState() {
+            fetch('/state')
+            .then(r => r.json())
+            .then(state => {
+                updateUI(state);
+            })
+            .catch(err => {
+                console.error('Fetch state error:', err);
+            });
+        }
+        
+        function addMessage() {
+            const container = document.getElementById('message_inputs');
+            const addBtn = container.querySelector('.add-message-btn');
+
+            const newContainer = document.createElement('div');
+            newContainer.className = 'message-input-container';
+
+            newContainer.innerHTML = `
+                <input type="text" class="message-input" placeholder="Enter message">
+                <button class="remove-message-btn" onclick="removeMessage(this)">-</button>
+            `;
+
+            container.insertBefore(newContainer, addBtn);
+        }
+
+        function removeMessage(btn) {
+            const containers = document.querySelectorAll('.message-input-container');
+            if (containers.length > 1) {
+                btn.closest('.message-input-container').remove();
+            }
+        }
+
+        // Auto-refresh
+        setInterval(fetchState, 2000);
+        fetchState();
+    </script>
 </body>
 </html>'''
 
@@ -630,7 +2127,7 @@ if __name__ == "__main__":
     print("🔥 REAL-TIME MULTI-ACCOUNT WORKING")
     print("\n🔧 DEBUG MODE: OTP detection enabled")
     
-    # Railway configuration
+    # Railway Quick Fix - Single Worker Mode
     port = int(os.environ.get("PORT", 5000))
     app.run(
         host='0.0.0.0', 
