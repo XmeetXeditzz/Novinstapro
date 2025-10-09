@@ -8,27 +8,62 @@ import hashlib
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
-# Global state
-STATE = {
-    "running": False,
-    "logs": ["System started"],
-    "status": "idle",
-    "last_response": None,
-    "threads": [],
-    "stats": {"sent": 0, "failed": 0, "rate": 0, "max_messages": 100},
-    "current_account": None,
-    "accounts": [],
-    "active_workers": 0
-}
+# ---------- Persistent State Management ----------
+class StateManager:
+    def __init__(self):
+        self.state_file = Path("app_state.json")
+        self._ensure_state_file()
+    
+    def _ensure_state_file(self):
+        if not self.state_file.exists():
+            initial_state = {
+                "running": False,
+                "logs": ["System started"],
+                "status": "idle",
+                "last_response": None,
+                "threads": [],
+                "stats": {"sent": 0, "failed": 0, "rate": 0, "max_messages": 100},
+                "current_account": None,
+                "accounts": [],
+                "active_workers": 0
+            }
+            self.state_file.write_text(json.dumps(initial_state))
+    
+    def get_state(self):
+        try:
+            return json.loads(self.state_file.read_text())
+        except:
+            self._ensure_state_file()
+            return self.get_state()
+    
+    def set_state(self, state):
+        self.state_file.write_text(json.dumps(state, indent=2))
+    
+    def update_state(self, updates):
+        state = self.get_state()
+        state.update(updates)
+        self.set_state(state)
+    
+    def add_log(self, message):
+        state = self.get_state()
+        ts = time.strftime("%H:%M:%S")
+        state["logs"].append(f"[{ts}] {message}")
+        if len(state["logs"]) > 25:
+            state["logs"] = state["logs"][-25:]
+        self.set_state(state)
+
+# Initialize state manager
+state_manager = StateManager()
+
+WORKER = {"threads": [], "stop_flag": False}
+lock = threading.Lock()
 WORKER = {"threads": [], "stop_flag": False}
 lock = threading.Lock()
 
 # ---------- Logging ----------
 def log(msg):
     ts = time.strftime("%H:%M:%S")
-    STATE["logs"].append(f"[{ts}] {msg}")
-    if len(STATE["logs"]) > 25:
-        STATE["logs"] = STATE["logs"][-25:]
+    state_manager.add_log(msg)
     print(f"[{ts}] {msg}")  # Console print bhi
 
 # ---------- Advanced Account Management ----------
@@ -1890,7 +1925,6 @@ TEMPLATE = r'''<!DOCTYPE html>
 </body>
 </html>'''
 
-# ---------- Chat Management ----------
 def load_chats_for_account(username):
     """Load chats for specific account"""
     try:
@@ -1912,6 +1946,17 @@ def load_chats_for_account(username):
             log(f"❌ Error loading threads: {str(e)[:200]}")
             return False, f"Failed to load chats: {str(e)[:200]}"
         
+        state_manager.update_state({
+            "threads": threads,
+            "current_account": username
+        })
+        log(f"✅ Loaded {len(threads)} chats for {username}")
+        return True, f"Loaded {len(threads)} conversations"
+        
+    except Exception as e:
+        log(f"❌ Failed to load chats: {str(e)[:200]}")
+        return False, str(e)[:200]
+        
         STATE["threads"] = threads
         STATE["current_account"] = username
         log(f"✅ Loaded {len(threads)} chats for {username}")
@@ -1928,9 +1973,10 @@ def index():
 
 @app.route("/state")
 def get_state():
-    STATE["accounts"] = account_manager.get_accounts_list()
-    return jsonify(STATE)
-
+    state = state_manager.get_state()
+    state["accounts"] = account_manager.get_accounts_list()
+    return jsonify(state)
+    
 @app.route("/login", methods=["POST"])
 def login():
     payload = request.get_json(force=True)
@@ -1981,8 +2027,10 @@ def switch_account():
     username = payload.get("username")
     
     if username in account_manager.accounts:
-        STATE["current_account"] = username
-        STATE["threads"] = []
+        state_manager.update_state({
+            "current_account": username,
+            "threads": []
+        })
         log(f"🔄 Switched to account: {username}")
         return jsonify({"ok": True, "message": f"Switched to {username}"})
     else:
@@ -2066,9 +2114,12 @@ def stop_sending():
     for t in WORKER["threads"]:
         t.join(timeout=5)
     WORKER["threads"] = []
-    STATE["running"] = False
-    STATE["status"] = "idle"
-    STATE["active_workers"] = 0
+    
+    state_manager.update_state({
+        "running": False,
+        "status": "idle", 
+        "active_workers": 0
+    })
     
     # Deactivate all accounts
     for account in account_manager.accounts.values():
