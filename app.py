@@ -1,9 +1,12 @@
 import time, threading, random, json, os, concurrent.futures, secrets
 from pathlib import Path
-from flask import Flask, render_template_string, request, jsonify, session
+from flask import Flask, render_template_string, request, jsonify, redirect
 from instagrapi import Client
 from instagrapi.exceptions import ClientError, LoginRequired
 import hashlib
+import requests
+
+
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
@@ -23,13 +26,19 @@ STATE = {
 WORKER = {"threads": [], "stop_flag": False}
 lock = threading.Lock()
 
+# Multiple Accounts Manager
+ACCOUNTS_MANAGER = {
+    "accounts": {},
+    "active_sessions": {},
+    "worker_status": {}
+}
+
 # ---------- Logging ----------
 def log(msg):
     ts = time.strftime("%H:%M:%S")
     STATE["logs"].append(f"[{ts}] {msg}")
     if len(STATE["logs"]) > 25:
         STATE["logs"] = STATE["logs"][-25:]
-    print(f"[{ts}] {msg}")
 
 # ---------- Advanced Account Management ----------
 class AdvancedAccountManager:
@@ -37,7 +46,6 @@ class AdvancedAccountManager:
         self.accounts = {}
         self.sessions_dir = Path("sessions")
         self.sessions_dir.mkdir(exist_ok=True)
-        self.pending_verification = {}
         self.load_accounts()
     
     def load_accounts(self):
@@ -65,19 +73,15 @@ class AdvancedAccountManager:
         """Login to Instagram account with OTP support"""
         try:
             cl = Client()
+            
+            # Set some headers to avoid detection
             cl.set_user_agent("Instagram 219.0.0.12.117 Android")
             
             if verification_code:
                 # OTP/2FA login
-                log(f"🔄 Attempting login with OTP for {username}")
                 cl.login(username, password, verification_code=verification_code)
-                
-                if username in self.pending_verification:
-                    del self.pending_verification[username]
-                    
             else:
-                # Regular login - SIMPLE APPROACH
-                log(f"🔄 Attempting regular login for {username}")
+                # Regular login
                 cl.login(username, password)
             
             session_file = self.sessions_dir / f"{username}.json"
@@ -95,71 +99,14 @@ class AdvancedAccountManager:
                 'worker_id': None
             }
             
-            log(f"✅ Successfully logged in: {username}")
             return True, None
             
         except Exception as e:
             error_msg = str(e)
-            log(f"❌ Login error for {username}: {error_msg}")
-            
-            # Check for ANY kind of verification requirement
-            if any(keyword in error_msg.lower() for keyword in ["checkpoint", "verification", "challenge", "2fa", "two-factor", "enter code", "security code", "confirm"]):
-                log(f"🔐 OTP REQUIRED DETECTED for {username}")
-                # Store login credentials for OTP verification
-                self.pending_verification[username] = {
-                    'password': password,
-                    'client': Client(),
-                    'timestamp': time.time()
-                }
-                self.pending_verification[username]['client'].set_user_agent("Instagram 219.0.0.12.117 Android")
+            if "checkpoint" in error_msg.lower() or "verification" in error_msg.lower():
                 return False, "verification_required"
-            else:
-                return False, error_msg
-    
-    def complete_verification(self, username, verification_code):
-        """Complete login with verification code"""
-        if username not in self.pending_verification:
-            log(f"❌ No pending verification found for {username}")
-            return False, "No pending verification found"
-        
-        try:
-            pending_data = self.pending_verification[username]
-            cl = pending_data['client']
-            password = pending_data['password']
-            
-            log(f"🔄 Completing verification for {username} with OTP: {verification_code}")
-            
-            # Complete login with verification code
-            cl.login(username, password, verification_code=verification_code)
-            
-            session_file = self.sessions_dir / f"{username}.json"
-            cl.dump_settings(str(session_file))
-            
-            user_info = cl.account_info()
-            
-            self.accounts[username] = {
-                'client': cl,
-                'username': username,
-                'full_name': user_info.full_name,
-                'status': 'online',
-                'session_file': session_file,
-                'is_active': False,
-                'worker_id': None
-            }
-            
-            # Clear pending verification
-            del self.pending_verification[username]
-            
-            log(f"✅ OTP verification successful for {username}")
-            return True, None
-            
-        except Exception as e:
-            error_msg = str(e)
-            log(f"❌ OTP verification failed for {username}: {error_msg}")
-            
-            # Check if it's a wrong code error
-            if "wrong code" in error_msg.lower() or "invalid code" in error_msg.lower():
-                return False, "Wrong verification code. Please check and try again."
+            elif "challenge" in error_msg.lower():
+                return False, "challenge_required"
             else:
                 return False, error_msg
     
@@ -218,10 +165,12 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
         last_rate_check = start_time
         messages_since_check = 0
         
+        # Update max messages in state
         with lock:
             STATE["stats"]["max_messages"] = max_per_run
             STATE["active_workers"] = len(accounts_list)
 
+        # Create send tasks distributed across accounts
         send_tasks = []
         account_index = 0
         
@@ -249,9 +198,11 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
                 future = executor.submit(send_message_multi_worker, account, tid, message)
                 futures.append(future)
                 
+                # Control sending speed
                 if messages_per_second > 0:
                     time.sleep(1.0 / messages_per_second)
 
+            # Process results
             for future in concurrent.futures.as_completed(futures):
                 try:
                     success, username = future.result()
@@ -273,6 +224,7 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
                         STATE["stats"]["failed"] += 1
                     log(f"❌ Future error: {str(e)[:200]}")
 
+                # Update rate every 2 seconds
                 current_time = time.time()
                 if current_time - last_rate_check >= 2.0:
                     actual_rate = (messages_since_check / (current_time - last_rate_check)) if (current_time - last_rate_check) > 0 else 0
@@ -281,14 +233,17 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
                     messages_since_check = 0
                     last_rate_check = current_time
 
+                # Progress updates
                 if STATE["stats"]["sent"] % 10 == 0:
                     progress = (STATE["stats"]["sent"] / max_per_run) * 100
                     log(f"📈 Progress: {STATE['stats']['sent']}/{max_per_run} ({progress:.1f}%)")
 
+                # Check if we've reached max messages
                 if STATE["stats"]["sent"] >= max_per_run:
                     log(f"🎯 Reached maximum messages limit: {max_per_run}")
                     break
 
+        # Final stats
         total_time = time.time() - start_time
         final_rate = STATE["stats"]["sent"] / total_time if total_time > 0 else 0
 
@@ -304,8 +259,77 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
             STATE["status"] = "idle"
             STATE["active_workers"] = 0
         WORKER["stop_flag"] = False
+        # Deactivate all accounts
         for account in accounts_list:
             account_manager.deactivate_account(account['username'])
+
+# ---------- LOGIN TEMPLATE ----------
+LOGIN_TEMPLATE = r'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - NovaGram Pro</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            line-height: 1.6;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+        }
+        .login-container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+        }
+        .logo {
+            font-size: 48px;
+            font-weight: 800;
+            background: linear-gradient(45deg, #405de6, #5851db, #833ab4, #c13584, #e1306c, #fd1d1d);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 20px;
+        }
+        .subtitle {
+            font-size: 18px;
+            color: #666;
+            margin-bottom: 40px;
+        }
+        .btn {
+            padding: 16px 32px;
+            border: none;
+            border-radius: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            font-size: 18px;
+            transition: all 0.3s ease;
+            width: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">NovaGram Pro</div>
+        <div class="subtitle">Multi-Account Instagram DM Manager</div>
+        <p style="color: #666; text-align: center; margin-bottom: 20px;">Add your first Instagram account to get started</p>
+    </div>
+</body>
+</html>'''
 
 # ---------- ULTIMATE UI ----------
 TEMPLATE = r'''<!DOCTYPE html>
@@ -1035,138 +1059,88 @@ TEMPLATE = r'''<!DOCTYPE html>
             font-size: 18px;
             margin-top: 10px;
         }
-        
-        /* Instagram-like OTP Modal */
-        .modal-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.7);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-            backdrop-filter: blur(5px);
-        }
-        
-        .otp-modal {
-            background: white;
-            border-radius: 20px;
-            padding: 40px;
-            max-width: 450px;
-            width: 90%;
-            text-align: center;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            animation: modalSlideIn 0.3s ease-out;
-        }
-        
-        @keyframes modalSlideIn {
-            from {
-                opacity: 0;
-                transform: translateY(-50px) scale(0.9);
+    </style>
+    <style>
+        /* Mobile responsive styles */
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+                max-width: 100%;
             }
-            to {
-                opacity: 1;
-                transform: translateY(0) scale(1);
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 15px;
+                padding: 20px;
+            }
+            .main-layout {
+                display: block;
+                min-height: auto;
+            }
+            .sidebar {
+                width: 100%;
+                border-radius: 15px;
+                padding: 25px;
+                margin-bottom: 20px;
+            }
+            .main-content {
+                width: 100%;
+                border-radius: 15px;
+                padding: 25px;
+            }
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 15px;
+            }
+            .account-card, .chat-item {
+                padding: 15px;
+                font-size: 14px;
+            }
+            .btn {
+                font-size: 16px;
+                padding: 18px 20px;
+            }
+            .form-input, .message-input {
+                font-size: 16px;
+                padding: 16px;
+            }
+            .message-box {
+                font-size: 16px;
+                min-height: 150px;
+            }
+            .stat-number {
+                font-size: 32px;
+            }
+            .stat-label {
+                font-size: 12px;
+            }
+            .slider-container {
+                gap: 15px;
+            }
+            .value-display {
+                font-size: 18px;
+                min-width: 60px;
+            }
+            .logs-panel {
+                height: 200px;
+                font-size: 12px;
+            }
+            .action-buttons {
+                grid-template-columns: 1fr;
+                gap: 15px;
             }
         }
         
-        .otp-icon {
-            font-size: 64px;
-            margin-bottom: 20px;
-        }
-        
-        .otp-title {
-            font-size: 28px;
-            font-weight: 700;
-            margin-bottom: 15px;
-            color: var(--dark);
-        }
-        
-        .otp-subtitle {
-            color: #666;
-            margin-bottom: 30px;
-            line-height: 1.5;
-        }
-        
-        .otp-input-group {
-            margin: 30px 0;
-        }
-        
-        .otp-input {
-            width: 100%;
-            padding: 20px;
-            font-size: 18px;
-            text-align: center;
-            border: 2px solid #e9ecef;
-            border-radius: 12px;
-            background: #f8f9fa;
-            transition: all 0.3s ease;
-            font-weight: 600;
-            letter-spacing: 2px;
-        }
-        
-        .otp-input:focus {
-            outline: none;
-            border-color: var(--primary);
-            background: white;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-            transform: translateY(-2px);
-        }
-        
-        .otp-actions {
-            display: flex;
-            gap: 15px;
-            margin-top: 25px;
-        }
-        
-        .otp-btn {
-            flex: 1;
-            padding: 16px;
-            border: none;
-            border-radius: 12px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        
-        .otp-btn-primary {
-            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
-            color: white;
-        }
-        
-        .otp-btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
-        }
-        
-        .otp-btn-secondary {
-            background: #f8f9fa;
-            color: var(--dark);
-            border: 2px solid #e9ecef;
-        }
-        
-        .otp-btn-secondary:hover {
-            background: white;
-            transform: translateY(-2px);
-        }
-        
-        .security-notice {
-            background: #fff3cd;
-            border: 1px solid #ffeaa7;
-            border-radius: 10px;
-            padding: 15px;
-            margin: 20px 0;
-            text-align: left;
-            font-size: 14px;
-            color: #856404;
-        }
-        
-        .security-notice strong {
-            display: block;
-            margin-bottom: 5px;
+        @media (max-width: 480px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            .login-section {
+                padding: 40px 20px;
+            }
+            .login-title {
+                font-size: 28px;
+            }
         }
     </style>
 </head>
@@ -1182,6 +1156,7 @@ TEMPLATE = r'''<!DOCTYPE html>
                 <span id="status_text">Ready</span>
                 <span id="active_workers">• 0 Workers</span>
             </div>
+<button class="btn btn-secondary" onclick="logout()" style="margin-left: 20px;">Logout</button>
         </div>
         
         <div class="main-layout">
@@ -1223,6 +1198,14 @@ TEMPLATE = r'''<!DOCTYPE html>
                         <div class="form-group">
                             <label class="form-label">Password</label>
                             <input type="password" id="password" class="form-input" placeholder="Enter password" autocomplete="current-password">
+                        </div>
+                        
+                        <div class="form-group" id="verification_group" style="display: none;">
+                            <label class="form-label">Verification Code (OTP)</label>
+                            <input type="text" id="verification_code" class="form-input" placeholder="Enter OTP sent to your email/phone">
+                            <small style="color: #666; margin-top: 5px; display: block;">
+                                🔐 Check your email or phone for the verification code
+                            </small>
                         </div>
                         
                         <button class="btn btn-primary" onclick="loginAccount()" id="login_btn">
@@ -1327,43 +1310,11 @@ TEMPLATE = r'''<!DOCTYPE html>
         </div>
     </div>
 
-    <!-- OTP Verification Modal -->
-    <div id="otp_modal" class="modal-overlay hidden">
-        <div class="otp-modal">
-            <div class="otp-icon">🔐</div>
-            <div class="otp-title">Security Check Required</div>
-            <div class="otp-subtitle">
-                For your security, Instagram needs to verify it's you. 
-                Please enter the 6-digit code sent to your email or phone.
-            </div>
-            
-            <div class="security-notice">
-                <strong>🔒 Security Notice</strong>
-                This verification helps keep your account secure. The code will expire shortly.
-            </div>
-            
-            <div class="otp-input-group">
-                <input type="text" id="otp_code" class="otp-input" placeholder="Enter 6-digit code" maxlength="6" 
-                       pattern="[0-9]{6}" inputmode="numeric" autocomplete="one-time-code">
-            </div>
-            
-            <div class="otp-actions">
-                <button class="otp-btn otp-btn-secondary" onclick="cancelVerification()">
-                    Cancel
-                </button>
-                <button class="otp-btn otp-btn-primary" onclick="submitVerification()">
-                    Verify & Continue
-                </button>
-            </div>
-        </div>
-    </div>
-
     <script>
         let currentAccount = null;
         let selectedChats = new Set();
         let selectedAccounts = new Set();
         let showingLogin = false;
-        let pendingUsername = null;
         
         // Initialize speed slider
         const speedSlider = document.getElementById('speed_slider');
@@ -1376,18 +1327,6 @@ TEMPLATE = r'''<!DOCTYPE html>
         const maxMessagesInput = document.getElementById('max_messages_input');
         maxMessagesInput.addEventListener('input', function() {
             document.getElementById('max_messages_display').textContent = this.value;
-        });
-
-        // OTP input formatting
-        const otpInput = document.getElementById('otp_code');
-        otpInput.addEventListener('input', function(e) {
-            // Only allow numbers
-            this.value = this.value.replace(/[^0-9]/g, '');
-            
-            // Auto-submit when 6 digits entered
-            if (this.value.length === 6) {
-                submitVerification();
-            }
         });
         
         function updateUI(state) {
@@ -1454,7 +1393,7 @@ TEMPLATE = r'''<!DOCTYPE html>
                         <div class="account-name">${account.username}</div>
                         <div class="account-status">
                             <div class="status-indicator status-${account.status}"></div>
-                            ${account.status} ${account.is_active ? '• 🟢 Active' : '🔴 Inactive'}
+                            ${account.status} ${account.is_active ? '• 🟢 Active' : '• 🔴 Inactive'}
                         </div>
                     </div>
                     <div class="account-select"></div>
@@ -1497,8 +1436,10 @@ TEMPLATE = r'''<!DOCTYPE html>
         function toggleAccountSelection(username) {
             if (selectedAccounts.has(username)) {
                 selectedAccounts.delete(username);
+                account_manager.deactivate_account(username);
             } else {
                 selectedAccounts.add(username);
+                account_manager.activate_account(username);
             }
             updateMultiAccountInfo();
             fetchState();
@@ -1528,6 +1469,8 @@ TEMPLATE = r'''<!DOCTYPE html>
         function showLogin() {
             document.getElementById('username').value = '';
             document.getElementById('password').value = '';
+            document.getElementById('verification_code').value = '';
+            document.getElementById('verification_group').style.display = 'none';
             document.getElementById('login_status').style.display = 'none';
             document.getElementById('login_section').classList.remove('hidden');
             document.getElementById('control_section').classList.add('hidden');
@@ -1537,6 +1480,7 @@ TEMPLATE = r'''<!DOCTYPE html>
         function loginAccount() {
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
+            const verificationCode = document.getElementById('verification_code').value;
             
             if (!username || !password) {
                 showLoginStatus('Please enter username and password', 'error');
@@ -1552,18 +1496,16 @@ TEMPLATE = r'''<!DOCTYPE html>
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     username: username,
-                    password: password
+                    password: password,
+                    verification_code: verificationCode
                 })
             })
             .then(r => r.json())
             .then(result => {
-                console.log('Login response:', result);
                 if (result.ok) {
                     if (result.requires_verification) {
-                        // Show OTP modal
-                        pendingUsername = username;
-                        showOtpModal();
-                        showLoginStatus('🔐 Security verification required', 'warning');
+                        document.getElementById('verification_group').style.display = 'block';
+                        showLoginStatus('🔐 Enter verification code sent to your email/phone', 'warning');
                     } else {
                         currentAccount = username;
                         showingLogin = false;
@@ -1576,80 +1518,10 @@ TEMPLATE = r'''<!DOCTYPE html>
                     showLoginStatus('❌ ' + result.message, 'error');
                 }
             })
-            .catch(err => {
-                console.error('Login error:', err);
-                showLoginStatus('❌ Network error: ' + err.message, 'error');
-            })
             .finally(() => {
                 btn.disabled = false;
                 btn.innerHTML = '<span>🚀</span> Login to Instagram';
             });
-        }
-        
-        function showOtpModal() {
-            console.log('Showing OTP modal for:', pendingUsername);
-            const modal = document.getElementById('otp_modal');
-            modal.classList.remove('hidden');
-            document.getElementById('otp_code').value = '';
-            document.getElementById('otp_code').focus();
-        }
-        
-        function hideOtpModal() {
-            const modal = document.getElementById('otp_modal');
-            modal.classList.add('hidden');
-        }
-        
-        function submitVerification() {
-            const verificationCode = document.getElementById('otp_code').value;
-            
-            if (!verificationCode || verificationCode.length !== 6) {
-                alert('Please enter a valid 6-digit code');
-                return;
-            }
-            
-            if (!pendingUsername) {
-                alert('No pending verification found');
-                return;
-            }
-            
-            console.log('Submitting OTP for:', pendingUsername, 'Code:', verificationCode);
-            
-            fetch('/verify_otp', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    username: pendingUsername,
-                    verification_code: verificationCode
-                })
-            })
-            .then(r => r.json())
-            .then(result => {
-                console.log('OTP verification response:', result);
-                if (result.ok) {
-                    hideOtpModal();
-                    currentAccount = pendingUsername;
-                    showingLogin = false;
-                    showLoginStatus('✅ Verification successful! Account added.', 'success');
-                    pendingUsername = null;
-                    setTimeout(() => {
-                        fetchState();
-                    }, 1500);
-                } else {
-                    showLoginStatus('❌ ' + result.message, 'error');
-                    document.getElementById('otp_code').value = '';
-                    document.getElementById('otp_code').focus();
-                }
-            })
-            .catch(err => {
-                console.error('OTP verification error:', err);
-                showLoginStatus('❌ Network error: ' + err.message, 'error');
-            });
-        }
-        
-        function cancelVerification() {
-            hideOtpModal();
-            pendingUsername = null;
-            showLoginStatus('Verification cancelled', 'warning');
         }
         
         function showLoginStatus(message, type) {
@@ -1786,6 +1658,10 @@ TEMPLATE = r'''<!DOCTYPE html>
             }
         }
 
+        function logout() {
+            window.location.href = '/logout';
+        }
+
         // Auto-refresh
         setInterval(fetchState, 2000);
         fetchState();
@@ -1825,6 +1701,17 @@ def load_chats_for_account(username):
         return False, str(e)[:200]
 
 # ---------- Routes ----------
+@app.route('/logout')
+def logout():
+    # Clear all accounts
+    for account in account_manager.accounts.values():
+        account['is_active'] = False
+    account_manager.accounts.clear()
+    STATE["accounts"] = []
+    STATE["threads"] = []
+    log("🗑️ All accounts cleared")
+    return redirect('/')
+
 @app.route("/")
 def index():
     return render_template_string(TEMPLATE)
@@ -1839,44 +1726,21 @@ def login():
     payload = request.get_json(force=True)
     username = payload.get("username")
     password = payload.get("password")
+    verification_code = payload.get("verification_code")
     
     if not username or not password:
         return jsonify({"ok": False, "message": "Username and password required"})
     
-    success, error_type = account_manager.login_account(username, password)
+    success, error_type = account_manager.login_account(username, password, verification_code)
     
     if success:
         log(f"✅ Account added: {username}")
         return jsonify({"ok": True, "message": "Login successful"})
     else:
         if error_type == "verification_required":
-            log(f"🔐 OTP required for {username}")
-            return jsonify({
-                "ok": False, 
-                "requires_verification": True, 
-                "message": "Verification code required"
-            })
+            return jsonify({"ok": False, "requires_verification": True, "message": "Verification code required"})
         else:
             return jsonify({"ok": False, "message": f"Login failed: {error_type}"})
-
-@app.route("/verify_otp", methods=["POST"])
-def verify_otp():
-    """Complete login with OTP verification"""
-    payload = request.get_json(force=True)
-    username = payload.get("username")
-    verification_code = payload.get("verification_code")
-    
-    if not username or not verification_code:
-        return jsonify({"ok": False, "message": "Username and verification code required"})
-    
-    success, error_msg = account_manager.complete_verification(username, verification_code)
-    
-    if success:
-        log(f"✅ Account verified and added: {username}")
-        return jsonify({"ok": True, "message": "Verification successful"})
-    else:
-        log(f"❌ OTP verification failed for {username}: {error_msg}")
-        return jsonify({"ok": False, "message": f"Verification failed: {error_msg}"})
 
 @app.route("/switch_account", methods=["POST"])
 def switch_account():
@@ -1991,5 +1855,4 @@ if __name__ == "__main__":
     print("⚡ Speed control: 1-20 messages/second")
     print("🎯 Custom max messages: 1-10,000")
     print("🔥 REAL-TIME MULTI-ACCOUNT WORKING")
-    print("\n🔧 DEBUG MODE: OTP detection enabled")
     app.run(host='0.0.0.0', port=5000, debug=False)
