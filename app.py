@@ -1,12 +1,9 @@
 import time, threading, random, json, os, concurrent.futures, secrets
 from pathlib import Path
-from flask import Flask, render_template_string, request, jsonify, redirect
+from flask import Flask, render_template_string, request, jsonify, session
 from instagrapi import Client
 from instagrapi.exceptions import ClientError, LoginRequired
 import hashlib
-import requests
-
-
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
@@ -262,74 +259,6 @@ def multi_account_sender_worker(accounts_list, thread_ids, messages, messages_pe
         # Deactivate all accounts
         for account in accounts_list:
             account_manager.deactivate_account(account['username'])
-
-# ---------- LOGIN TEMPLATE ----------
-LOGIN_TEMPLATE = r'''<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - NovaGram Pro</title>
-    <style>
-        body {
-            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: #333;
-            line-height: 1.6;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0;
-        }
-        .login-container {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 20px;
-            padding: 40px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
-            text-align: center;
-            max-width: 400px;
-            width: 100%;
-        }
-        .logo {
-            font-size: 48px;
-            font-weight: 800;
-            background: linear-gradient(45deg, #405de6, #5851db, #833ab4, #c13584, #e1306c, #fd1d1d);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 20px;
-        }
-        .subtitle {
-            font-size: 18px;
-            color: #666;
-            margin-bottom: 40px;
-        }
-        .btn {
-            padding: 16px 32px;
-            border: none;
-            border-radius: 15px;
-            font-weight: 700;
-            cursor: pointer;
-            font-size: 18px;
-            transition: all 0.3s ease;
-            width: 100%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
-        }
-    </style>
-</head>
-<body>
-    <div class="login-container">
-        <div class="logo">NovaGram Pro</div>
-        <div class="subtitle">Multi-Account Instagram DM Manager</div>
-        <p style="color: #666; text-align: center; margin-bottom: 20px;">Add your first Instagram account to get started</p>
-    </div>
-</body>
-</html>'''
 
 # ---------- ULTIMATE UI ----------
 TEMPLATE = r'''<!DOCTYPE html>
@@ -1156,7 +1085,6 @@ TEMPLATE = r'''<!DOCTYPE html>
                 <span id="status_text">Ready</span>
                 <span id="active_workers">• 0 Workers</span>
             </div>
-<button class="btn btn-secondary" onclick="logout()" style="margin-left: 20px;">Logout</button>
         </div>
         
         <div class="main-layout">
@@ -1658,10 +1586,6 @@ TEMPLATE = r'''<!DOCTYPE html>
             }
         }
 
-        function logout() {
-            window.location.href = '/logout';
-        }
-
         // Auto-refresh
         setInterval(fetchState, 2000);
         fetchState();
@@ -1701,17 +1625,6 @@ def load_chats_for_account(username):
         return False, str(e)[:200]
 
 # ---------- Routes ----------
-@app.route('/logout')
-def logout():
-    # Clear all accounts
-    for account in account_manager.accounts.values():
-        account['is_active'] = False
-    account_manager.accounts.clear()
-    STATE["accounts"] = []
-    STATE["threads"] = []
-    log("🗑️ All accounts cleared")
-    return redirect('/')
-
 @app.route("/")
 def index():
     return render_template_string(TEMPLATE)
